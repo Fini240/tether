@@ -28,14 +28,31 @@ bundled inside it. Use that if you would rather click than type.
 
 ### macOS
 
+**The app.** Open `Tether-<version>.dmg`, drag `Tether.app` to Applications,
+and launch it. It lives in the menu bar — no Dock icon and no window, because
+there is nothing to show until you pick a role:
+
+```
+Stopped
+⚠ Accessibility not granted            <- click this, then relaunch
+Start as Host   /   Start as Client
+Pair with a new machine on next start
+Open Log…   /   Quit Tether
+```
+
+Granting Accessibility to `Tether.app` also covers the daemon it launches:
+macOS attributes a TCC grant to the *responsible* process, and the daemon runs
+as its child. Approving the bare CLI instead means approving whichever terminal
+you started it from — broader, and it comes unstuck more easily.
+
+**The CLI**, if you would rather type:
+
 ```sh
 gh auth login                 # once
 sh install.sh                 # picks the right build, verifies the checksum
 ```
 
-Then grant the permission it cannot work without:
-
-**System Settings → Privacy & Security → Accessibility → +** and add
+Then **System Settings → Privacy & Security → Accessibility → +** and add
 `/usr/local/bin/tether`.
 
 Two things that trip people up here, both macOS being macOS rather than bugs:
@@ -173,9 +190,9 @@ fallback, TLS with pinning, config persistence, graceful reconnect.
 
 Not done yet: file transfer (frames exist, offers are refused), the drag-and-drop
 arrangement UI (the menu bar app can start and stop the daemon, but not yet
-position screens), rich-text clipboard (degrades to plain text), lazy clipboard pull, live
-re-layout when a client's resolution changes, hotkey suppression while the
-cursor is on the host, tray app and service packaging.
+position screens), rich-text clipboard (degrades to plain text), lazy clipboard
+pull, live re-layout when a client's resolution changes, hotkey suppression
+while the cursor is on the host, and Windows/Linux service packaging.
 
 ### Verification
 
