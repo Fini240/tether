@@ -25,6 +25,7 @@ pub fn show(
     layout: &Layout,
     this: MachineId,
     cursor_on: Option<MachineId>,
+    cursor_position: Option<tether_proto::Point>,
     input_owner: Option<MachineId>,
     drag: &mut Option<Drag>,
 ) -> Option<Layout> {
@@ -123,6 +124,22 @@ pub fn show(
                 "driving",
                 egui::FontId::proportional(11.0),
                 egui::Color32::from_rgb(200, 210, 255),
+            );
+        }
+    }
+
+    // ---- where the pointer actually is ----
+    if let Some(at) = cursor_position {
+        let p = egui::pos2(
+            offset.x + (at.x - bounds.x) as f32 * scale,
+            offset.y + (at.y - bounds.y) as f32 * scale,
+        );
+        if viewport.contains(p) {
+            painter.circle_filled(p, 5.0, egui::Color32::from_rgb(120, 200, 255));
+            painter.circle_stroke(
+                p,
+                9.0,
+                egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(120, 200, 255)),
             );
         }
     }

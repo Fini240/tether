@@ -268,6 +268,18 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 
     if info.dwExtraInfo == TETHER_EVENT_MARK {
         shared.injected.fetch_add(1, Ordering::Relaxed);
+
+        // Still record where the pointer ended up. Deltas here are computed as
+        // `position - last`, so skipping this leaves `last` stale for as long
+        // as this machine is being driven from elsewhere — and the first real
+        // movement afterwards produces one enormous delta measured from a
+        // position the cursor left minutes ago, flinging the pointer across
+        // the canvas instead of walking it to the next screen.
+        if wparam as u32 == WM_MOUSEMOVE {
+            if let Ok(mut last) = shared.last.lock() {
+                *last = info.pt;
+            }
+        }
         return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
     }
 

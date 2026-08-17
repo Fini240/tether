@@ -615,6 +615,7 @@ impl TetherApp {
             &layout,
             this,
             self.status.cursor_on,
+            self.status.cursor_position,
             self.status.input_owner,
             &mut self.drag,
         );

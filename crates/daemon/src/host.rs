@@ -587,6 +587,7 @@ fn publish(
         s.layout = router.layout().clone();
         s.input_owner = Some(input_owner);
         s.cursor_on = Some(router.active());
+        s.cursor_position = Some(router.position());
         s.cursor_locked = router.is_locked();
         s.this_machine = Some(this);
         s.detail = detail;
@@ -789,7 +790,16 @@ fn apply_transition(
     input_owner: MachineId,
 ) {
     match transition {
-        Transition::Blocked => {}
+        Transition::Blocked => {
+            // Worth seeing: a move refused because the canvas has a gap there,
+            // or because the pointer is at the outer edge, is indistinguishable
+            // from a broken connection unless you are told.
+            tracing::debug!(
+                at = ?router.position(),
+                on = %router.active(),
+                "movement refused — no screen that way"
+            );
+        }
 
         Transition::Stay(located) => {
             // Only the machine being physically touched moves its own cursor

@@ -37,6 +37,10 @@ pub struct Status {
     pub input_owner: Option<MachineId>,
     /// Machine the pointer is currently on.
     pub cursor_on: Option<MachineId>,
+    /// Where the pointer is on the shared canvas. Drawn in the window, because
+    /// "the pointer will not cross" and "the pointer is not where you think"
+    /// look identical until you can see it.
+    pub cursor_position: Option<tether_proto::Point>,
     pub cursor_locked: bool,
     /// Set when the session stopped because something went wrong.
     pub error: Option<String>,

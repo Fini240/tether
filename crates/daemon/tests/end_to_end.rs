@@ -440,3 +440,73 @@ async fn a_client_can_drive_the_host() {
         "a keystroke from the driving client never reached the host: {injected:?}"
     );
 }
+
+/// With a client driving, the pointer must be able to come back to it.
+///
+/// Reported as "I can go from my Mac to my PC but not back". The Mac is the
+/// client and the one being touched; once the pointer is on the host, walking
+/// it back across the boundary has to hand the client its own cursor again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_driving_client_can_get_the_pointer_back() {
+    let harness = start("roundtrip").await;
+
+    // Take control from the client, which also brings the pointer over.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let start_cursor = harness.client_output.cursor();
+    let mut took_over = false;
+    while tokio::time::Instant::now() < deadline {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: 40, dy: 40 });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if harness.client_output.cursor() != start_cursor {
+            took_over = true;
+            break;
+        }
+    }
+    assert!(took_over, "the client never took control");
+
+    // Walk left onto the host.
+    for _ in 0..8 {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: -400, dy: 0 });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let on_host = wait_for(&harness.host_input, 1).await;
+    assert!(
+        !on_host.is_empty(),
+        "the pointer never reached the host in the first place"
+    );
+
+    let before_return = harness.client_output.cursor();
+    harness.host_input.clear_injected();
+
+    // ...and back to the right, onto the client.
+    for _ in 0..10 {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: 400, dy: 0 });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Crossing back sends Enter, which warps the client's cursor. After that
+    // the client owns its own pointer again and the host stops being driven.
+    let after = harness.client_output.cursor();
+    assert_ne!(
+        after, before_return,
+        "the pointer never came back to the client that was driving"
+    );
+
+    harness.host_input.clear_injected();
+    harness
+        .client_output
+        .emit(LocalEvent::MouseDelta { dx: 5, dy: 5 });
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        harness.host_input.injected().is_empty(),
+        "the host is still being driven after the pointer returned to the client: {:?}",
+        harness.host_input.injected()
+    );
+}
