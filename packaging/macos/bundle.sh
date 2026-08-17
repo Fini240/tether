@@ -77,8 +77,20 @@ done
 lipo -create "$DIST/Tether-arm64" "$DIST/Tether-x86_64" -output "$APP/Contents/MacOS/Tether"
 rm -f "$DIST/Tether-arm64" "$DIST/Tether-x86_64"
 
-echo "==> Rendering the icon"
-python3 "$HERE/make_icon.py" "$APP/Contents/Resources/Tether.icns" >/dev/null
+echo "==> Icon"
+# The .icns is committed, not generated at build time. It is a design asset —
+# it should change when someone decides it should, not silently whenever a
+# build machine has a different Pillow. Regenerate it deliberately with
+# make_icon.py, which needs Pillow that CI does not have.
+if [[ -f "$HERE/Tether.icns" ]]; then
+	cp "$HERE/Tether.icns" "$APP/Contents/Resources/Tether.icns"
+	echo "    using the committed packaging/macos/Tether.icns"
+elif python3 -c "import PIL" 2>/dev/null; then
+	python3 "$HERE/make_icon.py" "$APP/Contents/Resources/Tether.icns" >/dev/null
+	echo "    rendered from make_icon.py"
+else
+	echo "    no icon available (no Tether.icns, no Pillow) — bundling without one" >&2
+fi
 
 echo "==> Assembling the bundle"
 cp "$DIST/tether" "$APP/Contents/Resources/tether"
