@@ -31,7 +31,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::{
     GetRawInputData, RegisterRawInputDevices, HRAWINPUT, MOUSE_MOVE_ABSOLUTE, RAWINPUT,
-    RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEMOUSE,
+    RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RIDEV_REMOVE, RID_INPUT, RIM_TYPEMOUSE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -258,6 +258,22 @@ unsafe fn register_raw_mouse(window: HWND) -> bool {
     RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32) != 0
 }
 
+/// Give the registration back before the window it points at goes away.
+///
+/// Stopping and starting a session in the same process is an ordinary thing to
+/// do from the window, and a registration left pointing at a destroyed window
+/// is what makes the second start silently deliver no movement at all.
+/// `RIDEV_REMOVE` requires a null target.
+unsafe fn unregister_raw_mouse() {
+    let device = RAWINPUTDEVICE {
+        usUsagePage: 0x01,
+        usUsage: 0x02,
+        dwFlags: RIDEV_REMOVE,
+        hwndTarget: std::ptr::null_mut(),
+    };
+    RegisterRawInputDevices(&device, 1, std::mem::size_of::<RAWINPUTDEVICE>() as u32);
+}
+
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,
@@ -405,7 +421,13 @@ fn run_hooks(ready: std::sync::mpsc::Sender<std::result::Result<(), String>>) {
             DispatchMessageW(&msg);
         }
 
+        if let Some(shared) = SHARED.get() {
+            shared.raw.store(false, Ordering::SeqCst);
+        }
         if let Some(window) = window {
+            if raw {
+                unregister_raw_mouse();
+            }
             DestroyWindow(window);
         }
         UnhookWindowsHookEx(keyboard);

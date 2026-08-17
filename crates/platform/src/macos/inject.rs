@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tether_proto::{InputEvent, KeyCode, Modifiers, MouseButton, Point};
@@ -312,7 +313,19 @@ pub fn warp(to: Point) -> Result<()> {
     Ok(())
 }
 
+/// Whether the cursor is currently hidden by us.
+///
+/// `CGDisplayHideCursor` and `CGDisplayShowCursor` are a counter, not a
+/// switch: hiding twice takes two shows to undo. Callers reasonably treat
+/// visibility as state and set it whenever they recompute it, so this has to
+/// only ever act on a change — otherwise a session's worth of "still hidden"
+/// runs the count into the hundreds and the cursor never comes back.
+static HIDDEN: AtomicBool = AtomicBool::new(false);
+
 pub fn set_cursor_visible(visible: bool) -> Result<()> {
+    if HIDDEN.swap(!visible, Ordering::SeqCst) == !visible {
+        return Ok(());
+    }
     unsafe {
         let display = CGMainDisplayID();
         let err = if visible {
@@ -321,6 +334,9 @@ pub fn set_cursor_visible(visible: bool) -> Result<()> {
             CGDisplayHideCursor(display)
         };
         if err != 0 {
+            // Put the flag back, or a failed hide is remembered as a hide and
+            // the show that should undo it is skipped.
+            HIDDEN.store(visible, Ordering::SeqCst);
             return Err(PlatformError::backend(format!(
                 "cursor visibility change failed: {err}"
             )));
