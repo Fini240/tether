@@ -3,8 +3,11 @@ Tether for Windows
 
 Two programs in this folder:
 
-  Tether.exe   The app. Double-click this one.
-  tether.exe   The same thing without a window, for a terminal or a service.
+  Tether.exe       The app. Double-click this one.
+  tether-cli.exe   The same thing without a window, for a terminal or a
+                   service. (Not "tether.exe": Windows treats that as the
+                   same name as Tether.exe, and one would overwrite the
+                   other.)
 
 
 Start here
@@ -48,5 +51,5 @@ Two things Windows will not let any program do
 More
 ----
 
-    tether.exe help
+    tether-cli.exe help
     https://github.com/Fini240/tether

@@ -23,7 +23,7 @@ binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
 | | |
 |---|---|
 | `Tether-<version>.dmg` | **macOS app.** Drag to Applications and open it. |
-| `tether-<version>-windows-x86_64.zip` | **Windows.** Contains `Tether.exe` (the app) and `tether.exe` (the CLI). |
+| `tether-<version>-windows-x86_64.zip` | **Windows.** Contains `Tether.exe` (the app) and `tether-cli.exe` (the CLI). |
 | `tether-<version>-macos-universal.tar.gz` | macOS command-line tool only. |
 
 On Windows the app needs no permission grant — low-level hooks work for any

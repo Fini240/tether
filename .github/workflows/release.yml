@@ -65,8 +65,12 @@ jobs:
         run: |
           name="tether-${{ steps.version.outputs.version }}-${{ matrix.name }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/tether.exe" "dist/$name/tether.exe"
+          # Distinct base names, not Tether.exe + tether.exe: Windows
+          # filenames are case-insensitive, so those are the SAME file and the
+          # second copy silently overwrites the first. That shipped a zip
+          # containing only the GUI wearing the CLI's name.
           cp "target/${{ matrix.target }}/release/tether-gui.exe" "dist/$name/Tether.exe"
+          cp "target/${{ matrix.target }}/release/tether.exe" "dist/$name/tether-cli.exe"
           cp packaging/README-WINDOWS.txt "dist/$name/README.txt"
           (cd dist && 7z a "$name.zip" "$name" && rm -rf "$name")
           (cd dist && sha256sum ./*.zip >SHA256SUMS)
