@@ -176,17 +176,25 @@ pub async fn run(
             continue;
         }
 
-        // Try each in turn. Every one gets a short connect timeout, so a
-        // black-holed address costs seconds rather than the OS default minute.
+        // Try each in turn. The timeout is the whole point: without it an
+        // address that is advertised but black-holed hangs for the OS default
+        // of over a minute, and four of them in a row look exactly like the
+        // app having frozen.
         let mut address = None;
         for candidate in &candidates {
             tracing::debug!(%candidate, "trying");
-            match tokio::net::TcpStream::connect(candidate).await {
-                Ok(_) => {
+            match tokio::time::timeout(
+                tether_net::client::CONNECT_TIMEOUT,
+                tokio::net::TcpStream::connect(candidate),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
                     address = Some(candidate.clone());
                     break;
                 }
-                Err(err) => tracing::debug!(%candidate, %err, "no answer"),
+                Ok(Err(err)) => tracing::debug!(%candidate, %err, "refused"),
+                Err(_) => tracing::debug!(%candidate, "timed out"),
             }
         }
 
