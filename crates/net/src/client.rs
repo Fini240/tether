@@ -18,12 +18,26 @@ pub struct Connected {
     pub connection: Connection<TlsStream<TcpStream>>,
 }
 
+/// How long to wait for a TCP connection before trying the next address.
+///
+/// The OS default is over a minute. An advertised-but-unreachable address is
+/// common enough — a global IPv6 the host is not actually listening on — that
+/// waiting that long for each one makes the app look hung.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Dial once.
 pub async fn connect(address: &str, identity: &Identity, trust: TrustStore) -> Result<Connected> {
     let config: Arc<ClientConfig> = tls::client_config(identity, trust)?;
     let connector = TlsConnector::from(config);
 
-    let stream = TcpStream::connect(address).await?;
+    let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
+        .await
+        .map_err(|_| {
+            NetError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer from {address} within {CONNECT_TIMEOUT:?}"),
+            ))
+        })??;
     stream.set_nodelay(true)?;
 
     // Names are not validated — pinning replaces that — but TLS requires an

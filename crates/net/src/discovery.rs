@@ -36,12 +36,57 @@ pub struct DiscoveredHost {
 }
 
 impl DiscoveredHost {
-    /// First address as a dialable `host:port`.
+    /// Every advertised address as a dialable `host:port`, best first.
+    ///
+    /// Order matters more than it looks. A machine advertises whatever its
+    /// interfaces have, which routinely includes global IPv6 addresses that
+    /// are advertised but not reachable — the host may be listening on IPv4
+    /// only, or IPv6 may be filtered between the two machines. Dialling the
+    /// first address and giving up produced "the machines cannot find each
+    /// other" when discovery had in fact worked perfectly.
+    ///
+    /// IPv4 first, then unique-local IPv6 (`fc00::/7`, which is LAN-scoped by
+    /// definition), then everything else.
+    pub fn socket_addrs(&self) -> Vec<String> {
+        let mut addresses = self.addresses.clone();
+        addresses.sort_by_key(|ip| match ip {
+            IpAddr::V4(_) => 0u8,
+            IpAddr::V6(v6) if v6.segments()[0] & 0xfe00 == 0xfc00 => 1,
+            IpAddr::V6(_) => 2,
+        });
+
+        addresses
+            .into_iter()
+            .map(|ip| match ip {
+                IpAddr::V4(v4) => format!("{v4}:{}", self.port),
+                IpAddr::V6(v6) => format!("[{v6}]:{}", self.port),
+            })
+            .collect()
+    }
+
+    /// The single best address, for display.
     pub fn socket_addr(&self) -> Option<String> {
-        self.addresses.first().map(|ip| match ip {
-            IpAddr::V4(v4) => format!("{v4}:{}", self.port),
-            IpAddr::V6(v6) => format!("[{v6}]:{}", self.port),
-        })
+        self.socket_addrs().into_iter().next()
+    }
+}
+
+/// This machine's own non-loopback IPv4 addresses.
+///
+/// Advertised explicitly alongside mdns-sd's automatic set. On at least some
+/// Windows machines the automatic set comes back IPv6-only, and a client with
+/// nothing but unreachable IPv6 addresses to try cannot connect at all.
+fn local_ipv4() -> Vec<IpAddr> {
+    match if_addrs::get_if_addrs() {
+        Ok(interfaces) => interfaces
+            .into_iter()
+            .filter(|i| !i.is_loopback())
+            .map(|i| i.ip())
+            .filter(IpAddr::is_ipv4)
+            .collect(),
+        Err(err) => {
+            tracing::warn!(%err, "could not enumerate local addresses");
+            Vec::new()
+        }
     }
 }
 
@@ -75,18 +120,28 @@ impl Advertiser {
         let instance = sanitise_instance_name(instance_name);
         let host_name = format!("{instance}.local.");
 
+        let addresses = local_ipv4();
+        if addresses.is_empty() {
+            tracing::warn!(
+                "no IPv4 address on any interface; clients may be unable to reach this host"
+            );
+        } else {
+            tracing::debug!(?addresses, "advertising these addresses");
+        }
+
         let service = ServiceInfo::new(
             SERVICE_TYPE,
             &instance,
             &host_name,
-            "",
+            &addresses[..],
             port,
             Some(properties),
         )
         .map_err(|e| NetError::Discovery(format!("invalid service info: {e}")))?
-        // Fills in this machine's addresses and keeps them current as
-        // interfaces come and go — important on a laptop moving between
-        // wifi and a dock.
+        // Adds whatever else the interfaces have and keeps it current as they
+        // come and go — important on a laptop moving between wifi and a dock.
+        // The explicit IPv4 above is belt and braces: this alone has been seen
+        // to yield IPv6-only on Windows.
         .enable_addr_auto();
 
         let fullname = service.get_fullname().to_string();
@@ -213,6 +268,46 @@ mod tests {
     #[test]
     fn instance_names_are_capped_at_a_dns_label() {
         assert_eq!(sanitise_instance_name(&"a".repeat(200)).len(), 63);
+    }
+
+    #[test]
+    fn ipv4_is_tried_before_ipv6() {
+        // The bug this guards: a host advertising a global IPv6 it is not
+        // listening on, alongside a working IPv4. Dialling the IPv6 first and
+        // stopping there looks exactly like "the machines cannot see each
+        // other", when discovery worked perfectly.
+        let host = DiscoveredHost {
+            name: "pc".into(),
+            addresses: vec![
+                "2003:e5:4743:d300::1".parse().unwrap(),
+                "fd6e:e6cc:b33b::1".parse().unwrap(),
+                "192.168.178.128".parse().unwrap(),
+            ],
+            port: 24800,
+            fingerprint: None,
+            platform: None,
+            protocol_version: None,
+        };
+
+        let addrs = host.socket_addrs();
+        assert_eq!(
+            addrs.len(),
+            3,
+            "every address must be offered, not just one"
+        );
+        assert_eq!(addrs[0], "192.168.178.128:24800");
+        // Unique-local IPv6 is LAN-scoped by definition, so it beats a global.
+        assert_eq!(addrs[1], "[fd6e:e6cc:b33b::1]:24800");
+        assert_eq!(addrs[2], "[2003:e5:4743:d300::1]:24800");
+    }
+
+    #[test]
+    fn this_machine_has_an_ipv4_address_to_advertise() {
+        // Not a strong assertion — CI runners have interfaces — but it catches
+        // the enumeration returning nothing at all, which is what left a host
+        // advertising IPv6 only.
+        let addrs = local_ipv4();
+        assert!(addrs.iter().all(|ip| ip.is_ipv4()));
     }
 
     #[test]

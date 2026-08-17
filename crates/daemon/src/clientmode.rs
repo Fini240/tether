@@ -169,13 +169,41 @@ pub async fn run(
     let mut backoff = Backoff::default();
 
     loop {
-        let address = match resolve_address(&options, &config).await {
-            Some(address) => address,
-            None => {
-                tracing::warn!("no host found; retrying");
-                tokio::time::sleep(backoff.next_delay()).await;
-                continue;
+        let candidates = resolve_addresses(&options, &config).await;
+        if candidates.is_empty() {
+            tracing::warn!("no host found; retrying");
+            tokio::time::sleep(backoff.next_delay()).await;
+            continue;
+        }
+
+        // Try each in turn. Every one gets a short connect timeout, so a
+        // black-holed address costs seconds rather than the OS default minute.
+        let mut address = None;
+        for candidate in &candidates {
+            tracing::debug!(%candidate, "trying");
+            match tokio::net::TcpStream::connect(candidate).await {
+                Ok(_) => {
+                    address = Some(candidate.clone());
+                    break;
+                }
+                Err(err) => tracing::debug!(%candidate, %err, "no answer"),
             }
+        }
+
+        let Some(address) = address else {
+            tracing::warn!(
+                tried = candidates.len(),
+                "found a host but could not reach it on any of its addresses"
+            );
+            if let Some(status) = &status {
+                let detail = format!(
+                    "found a host but none of its {} addresses answered",
+                    candidates.len()
+                );
+                status.update(|s| s.detail = detail);
+            }
+            tokio::time::sleep(backoff.next_delay()).await;
+            continue;
         };
 
         tracing::info!(%address, "connecting");
@@ -261,10 +289,16 @@ pub async fn run(
 
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Explicit address, then the last one that worked, then mDNS.
-async fn resolve_address(options: &Options, config: &Config) -> Option<String> {
+/// Every address worth trying, best first.
+///
+/// A list rather than one address: a host advertises whatever its interfaces
+/// have, and some of those are routinely unreachable — a global IPv6 the host
+/// is not listening on, or an interface that is up but not on this network.
+/// Trying only the first is what makes two machines that can see each other
+/// perfectly still fail to connect.
+async fn resolve_addresses(options: &Options, config: &Config) -> Vec<String> {
     if let Some(address) = &options.address {
-        return Some(address.clone());
+        return vec![address.clone()];
     }
 
     let found = match tether_net::discovery::browse(Duration::from_secs(3)).await {
@@ -284,16 +318,22 @@ async fn resolve_address(options: &Options, config: &Config) -> Option<String> {
             .unwrap_or(false)
     });
 
+    let mut candidates = Vec::new();
     if let Some(host) = paired.or_else(|| found.first()) {
         tracing::info!(name = %host.name, "found a host");
-        return host.socket_addr();
+        candidates.extend(host.socket_addrs());
     }
 
-    // Nothing on mDNS: fall back to whatever address last worked.
-    config
-        .peers
-        .iter()
-        .find_map(|peer| peer.last_address.clone())
+    // Whatever worked last time, in case mDNS is unhelpful today.
+    for peer in &config.peers {
+        if let Some(address) = &peer.last_address {
+            if !candidates.contains(address) {
+                candidates.push(address.clone());
+            }
+        }
+    }
+
+    candidates
 }
 
 #[allow(clippy::too_many_arguments)]

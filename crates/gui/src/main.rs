@@ -347,6 +347,37 @@ impl TetherApp {
                 self.stop();
             }
         } else {
+            ui.horizontal(|ui| {
+                ui.label("Host");
+                let mut address = self.config.address.clone().unwrap_or_default();
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut address)
+                        .hint_text("found automatically")
+                        .desired_width(f32::INFINITY),
+                );
+                if response.changed() {
+                    let trimmed = address.trim().to_string();
+                    self.config.address = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    };
+                }
+                if response.lost_focus() {
+                    if let Err(err) = self.config.save(&self.config_path) {
+                        self.error = Some(format!("could not save: {err}"));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "Leave empty to find the host over the network. Fill in \
+                 192.168.1.50:24800 to connect directly — useful when discovery \
+                 finds the machine but hands out an address it cannot be \
+                 reached on.",
+            );
+            ui.add_space(4.0);
+
             ui.checkbox(&mut self.pairing, "Pair with a new machine")
                 .on_hover_text(
                     "Accepts a machine that has never connected before. Leave it off \

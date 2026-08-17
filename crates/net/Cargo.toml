@@ -23,6 +23,8 @@ rcgen.workspace = true
 sha2.workspace = true
 
 mdns-sd = "0.11"
+# Enumerating our own IPv4 addresses, so the mDNS advert carries them.
+if-addrs = "0.13"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
