@@ -4,12 +4,12 @@ Share one keyboard and mouse across several computers on a LAN — a software
 KVM. No extra hardware, no cloud, and no screen streaming: only input,
 clipboard and file events cross the wire.
 
-**Status: walking skeleton.** The end-to-end path works — pairing, TLS,
-automatic layout, edge-based cursor switching, keyboard and mouse forwarding,
-cross-platform modifier remapping, clipboard sync. Windows and Linux backends,
-file transfer, and the arrangement UI are stubbed behind real interfaces. See
-[Implementation status](#implementation-status) for exactly what is and is not
-done.
+**macOS and Windows.** Linux is out of scope — Wayland offers no legacy input
+path at all, and supporting X11 alone would mean shipping something broken on
+the default session of every current distribution.
+
+There is a window on both platforms: start and stop a session, and drag your
+screens into the arrangement they actually have on your desk.
 
 ## Install
 
@@ -22,12 +22,13 @@ binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
 
 | | |
 |---|---|
-| `Tether-<version>.dmg` | the **app**. Drag to Applications, runs in the menu bar. Start here. |
-| `tether-<version>-<platform>.tar.gz` / `.zip` | the **command-line tool**. A folder with the `tether` binary and a README. |
+| `Tether-<version>.dmg` | **macOS app.** Drag to Applications and open it. |
+| `tether-<version>-windows-x86_64.zip` | **Windows.** Contains `Tether.exe` (the app) and `tether.exe` (the CLI). |
+| `tether-<version>-macos-universal.tar.gz` | macOS command-line tool only. |
 
-The archive is not an app — `tether` needs a subcommand, so double-clicking it
-prints usage and quits, and on macOS the download flag turns even that into a
-malware warning. Install it from a terminal, or use the `.dmg`.
+On Windows the app needs no permission grant — low-level hooks work for any
+process at the same integrity level. Windows Defender Firewall will ask about
+the network the first time you start a host; allow it for private networks.
 
 > **While this repository is private, downloads need authentication.** GitHub
 > serves a 404 rather than a useful error to an unauthenticated request, so the
@@ -116,12 +117,14 @@ Both macOS being macOS rather than bugs:
   nothing happening. Both roles check at startup and refuse to run rather than
   let you conclude the network is broken.
 
-### Linux and Windows
+### Windows
 
-The binaries build and run, but **the native input backends are not implemented
-yet** — they start only with `--backend headless`, which is for testing the
-network and routing, not for actually sharing a keyboard. See
-[Implementation status](#implementation-status).
+Unzip and run `Tether.exe`. Two limits are Windows' own, not bugs:
+
+- A program running **as administrator** cannot be driven by one that is not.
+  If everything works except an elevated app, run Tether as administrator too.
+- The **secure desktop** — UAC prompts, Ctrl+Alt+Del, the lock screen — accepts
+  no simulated input from anything, at any privilege level.
 
 ### Run at login (macOS)
 
@@ -295,14 +298,9 @@ fingerprints.
 | | capture | inject | monitors | clipboard | lock |
 |---|---|---|---|---|---|
 | macOS | ✅ CGEventTap | ✅ CGEvent | ✅ | ✅ | ✅ |
-| Windows | ⛔ | ⛔ | ⛔ | ✅ | ⛔ |
-| Linux / X11 | ⛔ | ⛔ | ⛔ | ✅ | ⛔ |
-| Linux / Wayland | ⛔ | ⛔ | ⛔ | ✅ | ⛔ |
+| Windows | ✅ WH_*_LL hooks | ✅ SendInput | ✅ | ✅ | ✅ |
 | headless | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Unimplemented backends fail at startup with the name of the API they need,
-rather than appearing to work. `crates/platform/src/windows.rs` and
-`linux.rs` carry the notes for building them.
 
 Done: edge switching, multi-monitor, relative screen arrangement from the CLI,
 automatic input handoff to whichever keyboard you touch, cursor lock,
@@ -310,11 +308,10 @@ jump-to-machine hotkeys, modifier remapping, clipboard text and images, mDNS
 discovery with manual fallback, TLS with pinning, config persistence, graceful
 reconnect.
 
-Not done yet: file transfer (frames exist, offers are refused), the drag-and-drop
-arrangement UI (arranging is `tether layout` for now; the menu bar app can start
-and stop the daemon but not position screens), rich-text clipboard (degrades to plain text), lazy clipboard
-pull, live re-layout when a client's resolution changes, hotkey suppression
-while the cursor is on the host, and Windows/Linux service packaging.
+Not done yet: file transfer (frames exist, offers are refused), rich-text
+clipboard (degrades to plain text), lazy clipboard pull, live re-layout when a
+client's resolution changes, hotkey suppression while the cursor is on the
+host, a tray icon, and run-at-login on Windows.
 
 ### Verification
 
@@ -340,6 +337,7 @@ end-to-end test.
 |---|---|
 | `tether-proto` | wire types and framing — everything that crosses the network |
 | `tether-core` | canvas, cursor router, keymap, hotkeys, config. No OS, no network |
+| `tether-gui` | the window: arrangement canvas, controls, status. egui, one binary |
 | `tether-platform` | the OS boundary: capture, injection, monitors, clipboard |
 | `tether-net` | TLS with pinning, identity, mDNS |
 | `tether-daemon` | the `tether` binary: host and client session loops |

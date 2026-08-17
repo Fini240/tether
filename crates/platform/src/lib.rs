@@ -9,9 +9,12 @@
 //! | | capture | inject | monitors | clipboard | lock |
 //! |---|---|---|---|---|---|
 //! | macOS   | ✅ CGEventTap | ✅ CGEvent | ✅ | ✅ | ✅ |
-//! | Windows | ⛔ stub | ⛔ stub | ⛔ stub | ✅ | ⛔ stub |
-//! | Linux/X11 | ⛔ stub | ⛔ stub | ⛔ stub | ✅ | ⛔ stub |
+//! | Windows | ✅ WH_*_LL hooks | ✅ SendInput | ✅ | ✅ | ✅ |
 //! | headless | ✅ synthetic | ✅ logs | ✅ fake | ✅ in-memory | ✅ no-op |
+//!
+//! Linux is out of scope. Wayland has no legacy input path at all, and
+//! supporting X11 alone would have meant shipping something that broke on the
+//! default session of every current distribution.
 //!
 //! Stubs return [`PlatformError::Unsupported`] with the name of the API that
 //! should be called, rather than silently doing nothing. A KVM that pretends to
@@ -29,9 +32,6 @@ pub mod macos;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub mod linux;
 
 pub use traits::{
     ClipboardAccess, InputCapture, InputInject, LocalEvent, Monitors, PlatformError, Pointer,
@@ -79,7 +79,10 @@ fn native() -> Result<Backend> {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn native() -> Result<Backend> {
-    linux::backend()
+    Err(traits::PlatformError::unsupported(
+        "this operating system. Tether targets macOS and Windows; \
+         run with --backend headless to exercise the rest of the stack",
+    ))
 }
 
 /// Whether this process holds the OS permissions needed to capture input.

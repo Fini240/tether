@@ -19,12 +19,15 @@ use tether_net::Identity;
 use tether_platform::{Backend, BackendKind, LocalEvent};
 use tether_proto::{Frame, Point, SourceEvent};
 
+use crate::control::{Command, DaemonControl, PeerInfo};
 use crate::session;
 
 pub struct Options {
     pub address: Option<String>,
     pub pairing: bool,
     pub config_path: PathBuf,
+    /// Publishes status and receives commands. `None` when run from the CLI.
+    pub control: Option<DaemonControl>,
 }
 
 /// What this client believes about who is driving and where the cursor is.
@@ -107,11 +110,25 @@ enum Ended {
 }
 
 pub async fn run(
-    options: Options,
+    mut options: Options,
     mut config: Config,
     identity: Identity,
     mut backend: Backend,
 ) -> Result<()> {
+    let control = options.control.take();
+    let (status, mut commands) = match control {
+        Some(control) => (Some(control.status), Some(control.commands)),
+        None => (None, None),
+    };
+    if let Some(status) = &status {
+        status.update(|s| {
+            s.running = true;
+            s.role = Some(tether_core::config::Role::Client);
+            s.this_machine = Some(identity.machine_id);
+            s.detail = "looking for a host".into();
+        });
+    }
+
     if backend.kind == BackendKind::Native {
         // Injection needs the same grant as capture on macOS, and fails
         // silently without it — check up front rather than let the user
@@ -162,6 +179,18 @@ pub async fn run(
         };
 
         tracing::info!(%address, "connecting");
+        if let Some(status) = &status {
+            let address = address.clone();
+            status.update(|s| s.detail = format!("connecting to {address}"));
+        }
+
+        // A Stop from the interface has to be honoured between attempts too,
+        // or stopping while reconnecting would wait out the backoff.
+        if let Some(rx) = &mut commands {
+            if let Ok(Command::Stop) = rx.try_recv() {
+                break;
+            }
+        }
         let outcome = session_once(
             &address,
             &mut config,
@@ -171,6 +200,7 @@ pub async fn run(
             &monitors,
             &options,
             &mut input_rx,
+            &status,
         )
         .await;
 
@@ -187,7 +217,17 @@ pub async fn run(
             Ok(Ended::Dropped) => {
                 backoff.reset();
             }
-            Ok(Ended::Fatal(err)) => return Err(err),
+            Ok(Ended::Fatal(err)) => {
+                if let Some(status) = &status {
+                    let message = format!("{err:#}");
+                    status.update(|s| {
+                        s.running = false;
+                        s.error = Some(message);
+                        s.detail = "stopped".into();
+                    });
+                }
+                return Err(err);
+            }
             Err(err) => {
                 tracing::warn!(%err, "connection failed");
             }
@@ -209,6 +249,13 @@ pub async fn run(
     let _ = backend.pointer.set_visible(true);
     backend.capture.stop();
     config.save(&options.config_path).ok();
+    if let Some(status) = &status {
+        status.update(|s| {
+            s.running = false;
+            s.peers.clear();
+            s.detail = "stopped".into();
+        });
+    }
     Ok(())
 }
 
@@ -259,6 +306,7 @@ async fn session_once(
     monitors: &[tether_proto::MonitorInfo],
     options: &Options,
     input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<LocalEvent>,
+    status: &Option<crate::control::StatusHandle>,
 ) -> Result<Ended> {
     let connected = connect(address, identity, trust.clone()).await?;
     let host_fingerprint = connected.fingerprint;
@@ -323,6 +371,21 @@ async fn session_once(
         platform = %welcome.platform,
         "connected — this machine is now reachable from the host's screen edge"
     );
+    if let Some(status) = &status {
+        let peer = PeerInfo {
+            machine: host_machine,
+            name: welcome.name.clone(),
+            platform: welcome.platform,
+            address: address.to_string(),
+            connected: true,
+        };
+        let detail = format!("connected to {}", welcome.name);
+        status.update(|s| {
+            s.peers = vec![peer];
+            s.detail = detail;
+            s.error = None;
+        });
+    }
 
     let mut clipboard_poll = tokio::time::interval(Duration::from_millis(500));
     let mut clipboard_seq: u64 = 0;

@@ -2,7 +2,7 @@
 #
 # Build the macOS artifacts:
 #
-#   Tether.app  — menu bar front end with the daemon bundled inside it
+#   Tether.app  — the window app, with the session running inside it
 #   .dmg        — drag-to-Applications installer wrapping that app
 #   .tar.gz     — the bare signed CLI, for /usr/local/bin and LaunchAgents
 #
@@ -44,10 +44,10 @@ sign() {
 	fi
 }
 
-echo "==> Building the daemon for both Apple architectures"
+echo "==> Building for both Apple architectures"
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
 	rustup target add "$target" >/dev/null 2>&1 || true
-	cargo build --release --bin tether --target "$target"
+	cargo build --release --bin tether --bin tether-gui --target "$target"
 done
 
 rm -rf "$DIST"
@@ -60,22 +60,11 @@ lipo -create \
 	-output "$DIST/tether"
 lipo -info "$DIST/tether"
 
-echo "==> Building the menu bar launcher"
-# -runtime-compatibility-version none: the Command Line Tools ship the Swift
-# back-deployment shims for arm64 only, so an x86_64 link fails looking for
-# them. The launcher uses no concurrency features that need back-deploying —
-# it is Dispatch and Timer — so dropping the shims is what makes a universal
-# build possible without a full Xcode install.
-for arch in arm64 x86_64; do
-	swiftc -O \
-		-target "${arch}-apple-macos11.0" \
-		-runtime-compatibility-version none \
-		-o "$DIST/Tether-$arch" \
-		"$HERE/Launcher/main.swift" 2>&1 | grep -vE "^ld: warning|Could not parse" || true
-	[[ -f "$DIST/Tether-$arch" ]] || { echo "launcher build failed for $arch" >&2; exit 1; }
-done
-lipo -create "$DIST/Tether-arm64" "$DIST/Tether-x86_64" -output "$APP/Contents/MacOS/Tether"
-rm -f "$DIST/Tether-arm64" "$DIST/Tether-x86_64"
+echo "==> Fusing the universal app"
+lipo -create \
+	"target/aarch64-apple-darwin/release/tether-gui" \
+	"target/x86_64-apple-darwin/release/tether-gui" \
+	-output "$APP/Contents/MacOS/Tether"
 
 echo "==> Icon"
 # The .icns is committed, not generated at build time. It is a design asset —
@@ -93,13 +82,12 @@ else
 fi
 
 echo "==> Assembling the bundle"
-cp "$DIST/tether" "$APP/Contents/Resources/tether"
-chmod +x "$APP/Contents/Resources/tether"
+# No CLI inside the bundle: the window runs the session itself, in-process.
+# One binary also means one Accessibility grant rather than two.
 sed "s/__VERSION__/$VERSION/g" "$HERE/Info.plist" >"$APP/Contents/Info.plist"
 
 echo "==> Signing"
-# Inside out: embedded executables first, then the bundle that contains them.
-sign "$APP/Contents/Resources/tether"
+# Inside out: the executable first, then the bundle containing it.
 sign "$APP/Contents/MacOS/Tether"
 sign "$APP"
 codesign --verify --deep --verbose=2 "$APP"

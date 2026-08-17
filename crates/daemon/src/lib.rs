@@ -7,5 +7,6 @@
 //! test that actually crosses a machine boundary.
 
 pub mod clientmode;
+pub mod control;
 pub mod host;
 pub mod session;

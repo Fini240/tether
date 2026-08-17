@@ -21,12 +21,6 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 
-	<!-- Menu bar accessory: no Dock icon, no app switcher entry. There is no
-	     window to show, so a Dock icon would only be something to click that
-	     does nothing. The status item is the whole interface. -->
-	<key>LSUIElement</key>
-	<true/>
-
 	<!-- Shown in the Input Monitoring prompt. Accessibility has no equivalent
 	     key — macOS words that dialog itself and gives no way to explain why
 	     the app is asking, which is why the menu spells it out instead. -->

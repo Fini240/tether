@@ -1,0 +1,27 @@
+[package]
+name = "tether-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tether-gui"
+path = "src/main.rs"
+
+[dependencies]
+tether-proto.workspace = true
+tether-core.workspace = true
+tether-platform.workspace = true
+tether-net.workspace = true
+tether-daemon = { path = "../daemon" }
+
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Default features on purpose: they bring the glow renderer and accesskit.
+# Without accesskit the window exists but is invisible to the platform
+# accessibility API, which is also how screen readers and UI automation see it.
+eframe = "0.31"
+egui = "0.31"

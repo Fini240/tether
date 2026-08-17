@@ -26,6 +26,7 @@ use tether_net::Identity;
 use tether_platform::{Backend, BackendKind, LocalEvent};
 use tether_proto::{ClipboardContents, Frame, InputEvent, Platform, Point, SourceEvent};
 
+use crate::control::{Command, DaemonControl, PeerInfo};
 use crate::session;
 
 pub struct Options {
@@ -37,6 +38,9 @@ pub struct Options {
     /// Fires with the actually-bound address once listening. Lets a caller that
     /// passed port 0 learn which port it got.
     pub ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+    /// Publishes status and receives commands. `None` when run headlessly from
+    /// the CLI, where nothing is watching.
+    pub control: Option<DaemonControl>,
 }
 
 /// Everything the session loop reacts to.
@@ -67,6 +71,7 @@ struct ClientHandle {
 struct Client {
     name: String,
     platform: Platform,
+    address: String,
     tx: UnboundedSender<Frame>,
     /// Modifier translation for this client, resolved once at join.
     keymap: ModifierMap,
@@ -117,6 +122,19 @@ pub async fn run(
         .with_context(|| format!("could not listen on {}", options.bind))?;
     let local_addr = listener.local_addr();
     tracing::info!(%local_addr, "host listening");
+
+    let control = options.control.take();
+    if let Some(control) = &control {
+        control.status.update(|status| {
+            status.running = true;
+            status.role = Some(tether_core::config::Role::Host);
+            status.listening = Some(local_addr.to_string());
+            status.this_machine = Some(identity.machine_id);
+            status.input_owner = Some(identity.machine_id);
+            status.error = None;
+            status.detail = format!("listening on {local_addr}");
+        });
+    }
 
     // Advertising is a convenience; a host that cannot do mDNS is still usable
     // with an explicit --host on the client, so a failure here is not fatal.
@@ -179,6 +197,13 @@ pub async fn run(
 
     tracing::info!("ready — move the pointer off a screen edge to cross machines");
 
+    // Held apart so the loop can await a command and publish status in the
+    // same iteration.
+    let (status, mut commands) = match control {
+        Some(control) => (Some(control.status), Some(control.commands)),
+        None => (None, None),
+    };
+
     loop {
         tokio::select! {
             biased;
@@ -200,6 +225,38 @@ pub async fn run(
                     &trust,
                     &mut input_owner,
                 )?;
+                publish(&status, &router, &clients, input_owner, identity.machine_id);
+            }
+
+            Some(command) = async { match &mut commands {
+                Some(rx) => rx.recv().await,
+                // No UI attached: park forever so this arm never fires rather
+                // than spinning on a `None` that resolves instantly.
+                None => std::future::pending().await,
+            } } => {
+                match command {
+                    Command::Stop => {
+                        tracing::info!("stopping at the interface's request");
+                        break;
+                    }
+                    Command::SetLayout(layout) => {
+                        tracing::info!("arrangement changed");
+                        config.layout = layout.clone();
+                        router.set_layout(layout);
+                        if let Err(err) = config.save(&options.config_path) {
+                            tracing::warn!(%err, "could not save the arrangement");
+                        }
+                    }
+                    Command::JumpTo(machine) => {
+                        let transition = router.jump_to(machine);
+                        apply_transition(transition, &router, &clients, &mut backend, input_owner);
+                    }
+                    Command::ToggleCursorLock => {
+                        let locked = router.toggle_lock();
+                        tracing::info!(locked, "cursor lock toggled");
+                    }
+                }
+                publish(&status, &router, &clients, input_owner, identity.machine_id);
             }
 
             _ = heartbeat.tick() => {
@@ -251,6 +308,14 @@ pub async fn run(
     config.layout = router.layout().clone();
     if let Err(err) = config.save(&options.config_path) {
         tracing::warn!(%err, "could not save the config");
+    }
+
+    if let Some(status) = &status {
+        status.update(|s| {
+            s.running = false;
+            s.peers.clear();
+            s.detail = "stopped".into();
+        });
     }
 
     Ok(())
@@ -396,6 +461,7 @@ fn handle_event(
                 Client {
                     name: handle.name,
                     platform: handle.platform,
+                    address: handle.address.clone(),
                     tx: handle.tx,
                     keymap,
                 },
@@ -451,6 +517,45 @@ fn handle_event(
             Ok(())
         }
     }
+}
+
+/// Copy the live session state into the published snapshot.
+fn publish(
+    status: &Option<crate::control::StatusHandle>,
+    router: &CursorRouter,
+    clients: &HashMap<MachineId, Client>,
+    input_owner: MachineId,
+    this: MachineId,
+) {
+    let Some(status) = status else { return };
+
+    let peers: Vec<PeerInfo> = clients
+        .iter()
+        .map(|(machine, client)| PeerInfo {
+            machine: *machine,
+            name: client.name.clone(),
+            platform: client.platform,
+            address: client.address.clone(),
+            connected: true,
+        })
+        .collect();
+
+    let detail = match peers.len() {
+        0 => "waiting for a machine to connect".to_string(),
+        1 => format!("{} connected", peers[0].name),
+        n => format!("{n} machines connected"),
+    };
+
+    status.update(|s| {
+        s.running = true;
+        s.peers = peers;
+        s.layout = router.layout().clone();
+        s.input_owner = Some(input_owner);
+        s.cursor_on = Some(router.active());
+        s.cursor_locked = router.is_locked();
+        s.this_machine = Some(this);
+        s.detail = detail;
+    });
 }
 
 /// Bring the cursor back to the host and restore local input.

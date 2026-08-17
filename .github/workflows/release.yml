@@ -25,9 +25,6 @@ jobs:
           # cost is a few megabytes.
           - name: macos-universal
             os: macos-14
-          - name: linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -38,13 +35,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libxcb1-dev libxcb-render0-dev \
-            libxcb-shape0-dev libxcb-xfixes0-dev
 
       - name: Resolve version
         id: version
@@ -62,24 +52,12 @@ jobs:
           chmod +x packaging/macos/bundle.sh
           packaging/macos/bundle.sh "${{ steps.version.outputs.version }}"
 
-      - name: Build (Linux / Windows)
+      - name: Build (Windows)
         if: runner.os != 'macOS'
         shell: bash
-        run: cargo build --release --bin tether --target ${{ matrix.target }}
-
-      # Archives extract to a folder with a README beside the binary, never to a
-      # lone executable that invites a double-click.
-      - name: Package (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
         run: |
-          name="tether-${{ steps.version.outputs.version }}-${{ matrix.name }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/tether" "dist/$name/tether"
-          cp packaging/README-CLI.txt "dist/$name/README.txt"
-          tar -czf "dist/$name.tar.gz" -C dist "$name"
-          rm -rf "dist/$name"
-          (cd dist && sha256sum ./*.tar.gz >SHA256SUMS)
+          cargo build --release --bin tether --bin tether-gui \
+            --target ${{ matrix.target }}
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -88,7 +66,8 @@ jobs:
           name="tether-${{ steps.version.outputs.version }}-${{ matrix.name }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/tether.exe" "dist/$name/tether.exe"
-          cp packaging/README-CLI.txt "dist/$name/README.txt"
+          cp "target/${{ matrix.target }}/release/tether-gui.exe" "dist/$name/Tether.exe"
+          cp packaging/README-WINDOWS.txt "dist/$name/README.txt"
           (cd dist && 7z a "$name.zip" "$name" && rm -rf "$name")
           (cd dist && sha256sum ./*.zip >SHA256SUMS)
 
