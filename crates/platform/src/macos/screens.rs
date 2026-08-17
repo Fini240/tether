@@ -11,6 +11,30 @@ use tether_proto::{MonitorId, MonitorInfo, Rect};
 use super::ffi::*;
 use crate::traits::{Monitors, PlatformError, Result};
 
+/// Backing pixels per logical point: 2.0 on a Retina panel, 1.0 otherwise.
+///
+/// Read from the display *mode* rather than `CGDisplayPixelsWide`, which
+/// returns logical points once the user picks a scaled resolution — so a
+/// Retina MacBook reports 1.0 through that call and the arrangement UI would
+/// draw every screen at the wrong physical size.
+fn backing_scale(display: CGDirectDisplayID) -> f32 {
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(display);
+        if mode.is_null() {
+            return 1.0;
+        }
+        let points = CGDisplayModeGetWidth(mode);
+        let pixels = CGDisplayModeGetPixelWidth(mode);
+        CGDisplayModeRelease(mode);
+
+        if points == 0 {
+            1.0
+        } else {
+            pixels as f32 / points as f32
+        }
+    }
+}
+
 /// Nobody has this many displays; the cap just bounds the stack array.
 const MAX_DISPLAYS: u32 = 16;
 
@@ -47,7 +71,6 @@ impl Monitors for MacMonitors {
             .map(|&id| {
                 let bounds = unsafe { CGDisplayBounds(id) };
                 let width = bounds.size.width as i32;
-                let pixels_wide = unsafe { CGDisplayPixelsWide(id) } as f32;
                 MonitorInfo {
                     id: MonitorId(id),
                     name: format!("Display {id}"),
@@ -57,13 +80,7 @@ impl Monitors for MacMonitors {
                         width,
                         bounds.size.height as i32,
                     ),
-                    // Backing pixels over logical points. 2.0 on a Retina
-                    // panel, 1.0 otherwise.
-                    scale: if width > 0 {
-                        pixels_wide / width as f32
-                    } else {
-                        1.0
-                    },
+                    scale: backing_scale(id),
                     primary: id == main,
                 }
             })

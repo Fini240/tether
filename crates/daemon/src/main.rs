@@ -223,9 +223,18 @@ async fn run(cli: Cli) -> Result<()> {
 
 fn init_logging(filter: &str) {
     use tracing_subscriber::EnvFilter;
+
+    // mdns-sd logs an ERROR every second for each interface it cannot send on.
+    // On macOS that includes `nan0` (Apple Wireless Direct Link), which is
+    // normally down — so a working host would print a scary error per second
+    // forever. Our own code already reports advertise and browse failures with
+    // context, so the library's own logging is suppressed by default.
+    // `RUST_LOG=mdns_sd=debug` brings it back when debugging discovery.
+    let default = format!("{filter},mdns_sd=off");
+
     let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(filter))
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+        .or_else(|_| EnvFilter::try_new(&default))
+        .unwrap_or_else(|_| EnvFilter::new("info,mdns_sd=off"));
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)

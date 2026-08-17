@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 #
-# Build a universal macOS binary, wrap it in Tether.app, and produce a .dmg
-# plus a plain .tar.gz.
+# Build a signed universal macOS binary and tar it up.
 #
-# Two artifacts because they serve different users: the .app is what you drag
-# to /Applications and grant Accessibility to, the tarball is what you drop in
-# /usr/local/bin and run from a terminal or a LaunchAgent.
+# Deliberately NOT an .app bundle or a .dmg. `tether` is a CLI that requires a
+# subcommand — double-clicking an app wrapper runs it with no arguments, so it
+# prints usage to a stderr nobody is watching and exits. With LSUIElement set
+# there is not even a Dock icon to show it happened. A .dmg would look like a
+# working installer and deliver nothing. When the tray UI lands it can ship a
+# real bundle; until then the terminal is the honest interface.
 #
-# Signing: ad-hoc (`codesign -s -`) unless MACOS_SIGN_IDENTITY is set. That is
-# enough to give the binary a *stable* code signature, which matters because
-# macOS keys the Accessibility grant to it — an unsigned binary has to be
-# re-approved constantly. It is NOT enough to satisfy Gatekeeper on a
-# downloaded file; see the quarantine note in the README.
+# Signing: the standalone binary is signed *as a standalone binary*. Signing it
+# as part of a bundle seals the Info.plist into the signature, so the binary on
+# its own then fails `codesign --verify` — and macOS keys the Accessibility
+# grant to the code signature, which makes that failure a permissions problem
+# rather than a cosmetic one.
+#
+# Ad-hoc unless MACOS_SIGN_IDENTITY is set. Ad-hoc gives a stable signature, so
+# the Accessibility grant sticks across restarts. It does NOT satisfy
+# Gatekeeper on a download; that needs a Developer ID and notarisation.
 #
 # Usage:  packaging/macos/bundle.sh [version]
 
@@ -20,7 +26,6 @@ set -euo pipefail
 VERSION="${1:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST="$ROOT/dist"
-APP="$DIST/Tether.app"
 
 cd "$ROOT"
 
@@ -31,44 +36,35 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
 done
 
 rm -rf "$DIST"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$DIST"
 
 echo "==> Fusing a universal binary"
 lipo -create \
 	"target/aarch64-apple-darwin/release/tether" \
 	"target/x86_64-apple-darwin/release/tether" \
-	-output "$APP/Contents/MacOS/tether"
-lipo -info "$APP/Contents/MacOS/tether"
-
-sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist >"$APP/Contents/Info.plist"
+	-output "$DIST/tether"
+lipo -info "$DIST/tether"
 
 echo "==> Signing"
 if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
-	# A real Developer ID. Hardened runtime is required for notarisation, and
-	# notarisation is what stops Gatekeeper quarantining the download.
 	codesign --force --options runtime --timestamp \
-		--sign "$MACOS_SIGN_IDENTITY" "$APP"
+		--sign "$MACOS_SIGN_IDENTITY" "$DIST/tether"
 	echo "    signed with $MACOS_SIGN_IDENTITY"
 else
-	codesign --force --sign - "$APP"
+	codesign --force --sign - "$DIST/tether"
 	echo "    ad-hoc signed (no MACOS_SIGN_IDENTITY set)"
 fi
-codesign --verify --verbose=2 "$APP"
+
+# Verify the way a user's Mac will: as a lone executable, not inside a bundle.
+codesign --verify --verbose=2 "$DIST/tether"
 
 echo "==> Packaging"
-tar -czf "$DIST/tether-$VERSION-macos-universal.tar.gz" \
-	-C "$APP/Contents/MacOS" tether
-
-STAGE="$(mktemp -d)"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname "Tether $VERSION" -srcfolder "$STAGE" \
-	-ov -format UDZO "$DIST/tether-$VERSION-macos-universal.dmg"
-rm -rf "$STAGE"
+tar -czf "$DIST/tether-$VERSION-macos-universal.tar.gz" -C "$DIST" tether
+rm "$DIST/tether"
 
 echo "==> Checksums"
 cd "$DIST"
-shasum -a 256 ./*.tar.gz ./*.dmg >SHA256SUMS
+shasum -a 256 ./*.tar.gz >SHA256SUMS
 cat SHA256SUMS
 
 echo

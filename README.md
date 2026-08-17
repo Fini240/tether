@@ -18,6 +18,11 @@ Each release ships a macOS universal build (Apple Silicon and Intel in one
 binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
 `SHA256SUMS` file.
 
+There is no `.app` or `.dmg`, on purpose. `tether` is a CLI that needs a
+subcommand, so an app wrapper would run it with no arguments and exit
+silently — an installer that appears to work and does nothing. A real bundle
+comes with the tray UI.
+
 > **While this repository is private, downloads need authentication.** GitHub
 > serves a 404 rather than a useful error to an unauthenticated request, so the
 > usual `curl | sh` one-liner will not work yet. Use the GitHub CLI route below
@@ -30,12 +35,10 @@ gh auth login                 # once
 sh install.sh                 # picks the right build, verifies the checksum
 ```
 
-Or drag `Tether.app` out of the `.dmg` into `/Applications`.
-
 Then grant the permission it cannot work without:
 
 **System Settings → Privacy & Security → Accessibility → +** and add
-`/usr/local/bin/tether` (or `Tether.app`).
+`/usr/local/bin/tether`.
 
 Two things that trip people up here, both macOS being macOS rather than bugs:
 
@@ -77,7 +80,7 @@ cargo build --release
 To produce the release artifacts yourself:
 
 ```sh
-packaging/macos/bundle.sh          # universal binary, Tether.app, .dmg
+packaging/macos/bundle.sh          # signed universal binary + checksums
 ```
 
 Try it without a second computer — a host and a client in one terminal each,
@@ -181,9 +184,16 @@ an end-to-end test that runs a host and a client in one process over a real TLS
 socket and asserts that the cursor crosses, coordinates translate into the
 client's space, and keystrokes arrive.
 
-The macOS event tap and display enumeration are **not** exercised by that
-suite — they need a logged-in graphical session. They are written but unproven;
-run `tether screens` on a real desktop session as the first check.
+The macOS backend is **not** exercised by that suite — an event tap needs a
+logged-in graphical session, which CI does not have. It has been verified by
+hand on an Apple Silicon Mac: `CGGetActiveDisplayList` enumerates displays with
+the correct Retina scale factor, and `CGEventTapCreate` installs successfully
+(the host reaching `ready` is the proof — it does not get there if the tap is
+refused).
+
+Still unverified by anything: the injection path on a second physical Mac, and
+so a real two-machine crossing. The routing either side of it is covered by the
+end-to-end test.
 
 ## Layout of the source
 

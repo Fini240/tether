@@ -18,6 +18,7 @@ pub type CFAllocatorRef = *const c_void;
 pub type CFStringRef = *const c_void;
 pub type CFDictionaryRef = *const c_void;
 pub type CGDirectDisplayID = u32;
+pub type CGDisplayModeRef = *mut c_void;
 pub type CGError = i32;
 
 #[repr(C)]
@@ -173,6 +174,14 @@ extern "C" {
     ) -> CGError;
     pub fn CGDisplayBounds(display: CGDirectDisplayID) -> CGRect;
     pub fn CGDisplayPixelsWide(display: CGDirectDisplayID) -> usize;
+
+    /// The current mode. `CGDisplayPixelsWide` is not a substitute: on a
+    /// scaled Retina mode it reports logical points, so a 2x display looks
+    /// like 1x. Only the mode knows the real backing-pixel count.
+    pub fn CGDisplayCopyDisplayMode(display: CGDirectDisplayID) -> CGDisplayModeRef;
+    pub fn CGDisplayModeGetWidth(mode: CGDisplayModeRef) -> usize;
+    pub fn CGDisplayModeGetPixelWidth(mode: CGDisplayModeRef) -> usize;
+    pub fn CGDisplayModeRelease(mode: CGDisplayModeRef);
     pub fn CGDisplayIsMain(display: CGDirectDisplayID) -> u32;
 }
 
