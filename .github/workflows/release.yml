@@ -130,9 +130,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ github.event.inputs.tag || github.ref_name }}"
-          gh release create "$tag" dist/* \
-            --repo "${{ github.repository }}" \
-            --title "$tag" \
-            --generate-notes \
-            --prerelease \
-            || gh release upload "$tag" dist/* --repo "${{ github.repository }}" --clobber
+
+          # Retry: the GitHub API returns a transient 503 often enough that a
+          # single attempt loses a whole release build to something that had
+          # nothing to do with the code. The old `create || upload` fallback
+          # made it worse — a 503 on create left upload reporting the useless
+          # "release not found".
+          publish() {
+            if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              gh release upload "$tag" dist/* --repo "${{ github.repository }}" --clobber
+            else
+              gh release create "$tag" dist/* \
+                --repo "${{ github.repository }}" \
+                --title "$tag" \
+                --generate-notes \
+                --prerelease
+            fi
+          }
+
+          for attempt in 1 2 3 4 5; do
+            if publish; then
+              echo "published on attempt $attempt"
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying in $((attempt * 15))s" >&2
+            sleep $((attempt * 15))
+          done
+
+          echo "could not publish after 5 attempts" >&2
+          exit 1
