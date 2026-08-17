@@ -63,7 +63,49 @@ sh install.sh                 # picks the right build, verifies the checksum
 Then **System Settings → Privacy & Security → Accessibility → +** and add
 `/usr/local/bin/tether`.
 
-Two things that trip people up here, both macOS being macOS rather than bugs:
+### "I granted Accessibility and it still says I did not"
+
+The most confusing failure in this whole project, so it gets its own heading.
+
+macOS ties an Accessibility grant to the app's **designated requirement**. With
+an ad-hoc signature — which is what these releases use, because notarisation
+needs a paid Apple Developer account — that requirement is a hash of the binary
+itself:
+
+```
+$ codesign -d -r- /Applications/Tether.app
+designated => cdhash H"7262c7a151084eccbbc20143f51dbc9454c1716a"
+```
+
+Every build changes that hash. So after an update the old grant no longer
+matches: the row stays in System Settings, still switched on, and macOS denies
+anyway. Toggling it off and on does not help, because the stale entry *is* the
+problem. Worse, each update leaves another one behind.
+
+Fix it from the menu: **⚠ Accessibility not granted → "Already switched on?
+Reset it and re-ask"**. Or by hand:
+
+```sh
+tccutil reset Accessibility dev.tether.Tether
+```
+
+then grant it again.
+
+**To stop it recurring**, sign with a certificate instead of ad-hoc. A
+self-signed one is enough — the requirement then names the certificate rather
+than a hash, and survives every rebuild:
+
+```sh
+packaging/macos/make-signing-cert.sh
+MACOS_SIGN_IDENTITY="Tether Local Signing" packaging/macos/bundle.sh
+```
+
+That does not help with Gatekeeper — a self-signed certificate is still not a
+Developer ID — but the permission stops falling off.
+
+### Other things that trip people up
+
+Both macOS being macOS rather than bugs:
 
 - **A downloaded binary is quarantined.** Gatekeeper blocks it and the message
   blames "an unidentified developer", which sends you looking in the wrong

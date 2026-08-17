@@ -139,8 +139,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             warn.target = self
             menu.addItem(warn)
 
+            // The confusing case: the app appears in System Settings, switched
+            // on, and macOS denies anyway. That happens after an update,
+            // because an ad-hoc signature makes the permission depend on a
+            // hash of the binary and the update changed it. The stale entry
+            // has to be cleared before a new one can be granted, and there is
+            // no way for a user to guess that from the settings pane.
+            let stale = NSMenuItem(
+                title: "Already switched on? Reset it and re-ask",
+                action: #selector(resetAccessibility), keyEquivalent: ""
+            )
+            stale.target = self
+            menu.addItem(stale)
+
             let hint = NSMenuItem(
-                title: "Click above, then restart Tether", action: nil, keyEquivalent: ""
+                title: "(needed after an update — the permission is tied to the build)",
+                action: nil, keyEquivalent: ""
             )
             hint.isEnabled = false
             menu.addItem(hint)
@@ -231,6 +245,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Clear this app's Accessibility entry so a fresh one can be granted.
+    ///
+    /// After an update the stored grant refers to the previous build's code
+    /// hash. macOS keeps showing the row and keeps denying; toggling it off and
+    /// on again does not help, because the entry itself is the stale thing.
+    /// Removing it is the only route back, and `tccutil` is the supported way.
+    @objc private func resetAccessibility() {
+        let bundleID = Bundle.main.bundleIdentifier ?? "dev.tether.Tether"
+
+        let reset = Process()
+        reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        reset.arguments = ["reset", "Accessibility", bundleID]
+        do {
+            try reset.run()
+            reset.waitUntilExit()
+        } catch {
+            present("Could not reset the permission: \(error.localizedDescription)")
+            return
+        }
+
+        if reset.terminationStatus != 0 {
+            present(
+                "Resetting the permission failed. Remove \"Tether\" by hand in "
+                    + "System Settings -> Privacy & Security -> Accessibility, "
+                    + "then add it again."
+            )
+            return
+        }
+
+        grantAccessibility()
+        rebuildMenu()
     }
 
     @objc private func openLog() {
