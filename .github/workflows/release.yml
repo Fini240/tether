@@ -67,22 +67,29 @@ jobs:
         shell: bash
         run: cargo build --release --bin tether --target ${{ matrix.target }}
 
+      # Archives extract to a folder with a README beside the binary, never to a
+      # lone executable that invites a double-click.
       - name: Package (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          mkdir -p dist
-          tar -czf "dist/tether-${{ steps.version.outputs.version }}-${{ matrix.name }}.tar.gz" \
-            -C "target/${{ matrix.target }}/release" tether
+          name="tether-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/tether" "dist/$name/tether"
+          cp packaging/README-CLI.txt "dist/$name/README.txt"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/$name"
           (cd dist && sha256sum ./*.tar.gz >SHA256SUMS)
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          mkdir -p dist
-          7z a "dist/tether-${{ steps.version.outputs.version }}-${{ matrix.name }}.zip" \
-            "./target/${{ matrix.target }}/release/tether.exe"
+          name="tether-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/tether.exe" "dist/$name/tether.exe"
+          cp packaging/README-CLI.txt "dist/$name/README.txt"
+          (cd dist && 7z a "$name.zip" "$name" && rm -rf "$name")
           (cd dist && sha256sum ./*.zip >SHA256SUMS)
 
       # Per-platform names: several jobs write a SHA256SUMS and artifact

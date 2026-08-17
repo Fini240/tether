@@ -109,8 +109,18 @@ sign "$DIST/tether"
 codesign --verify --verbose=2 "$DIST/tether"
 
 echo "==> Packaging"
-tar -czf "$DIST/tether-$VERSION-macos-universal.tar.gz" -C "$DIST" tether
-rm "$DIST/tether"
+# The archive extracts to a *folder*, not a lone executable. A bare `tether`
+# sitting in Downloads looks like something you double-click; it is a CLI that
+# needs a subcommand, so clicking it prints usage and quits — and on macOS the
+# quarantine flag turns that into a malware warning instead. A folder with a
+# README next to the binary makes what it is obvious before that happens.
+CLI_DIR="$DIST/tether-$VERSION-macos-universal"
+mkdir -p "$CLI_DIR"
+mv "$DIST/tether" "$CLI_DIR/tether"
+cp "$ROOT/packaging/README-CLI.txt" "$CLI_DIR/README.txt"
+tar -czf "$DIST/tether-$VERSION-macos-universal.tar.gz" -C "$DIST" \
+	"tether-$VERSION-macos-universal"
+rm -rf "$CLI_DIR"
 
 STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"

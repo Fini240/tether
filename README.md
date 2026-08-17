@@ -18,8 +18,16 @@ Each release ships a macOS universal build (Apple Silicon and Intel in one
 binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
 `SHA256SUMS` file.
 
-macOS also gets `Tether.app` in a `.dmg` — a menu bar app with the daemon
-bundled inside it. Use that if you would rather click than type.
+**Which one do you want?**
+
+| | |
+|---|---|
+| `Tether-<version>.dmg` | the **app**. Drag to Applications, runs in the menu bar. Start here. |
+| `tether-<version>-<platform>.tar.gz` / `.zip` | the **command-line tool**. A folder with the `tether` binary and a README. |
+
+The archive is not an app — `tether` needs a subcommand, so double-clicking it
+prints usage and quits, and on macOS the download flag turns even that into a
+malware warning. Install it from a terminal, or use the `.dmg`.
 
 > **While this repository is private, downloads need authentication.** GitHub
 > serves a 404 rather than a useful error to an unauthenticated request, so the
