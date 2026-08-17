@@ -130,12 +130,21 @@ extern "C" {
         keyDown: bool,
     ) -> CGEventRef;
 
-    /// Variadic in C: the wheel deltas follow `wheelCount`. Axis 1 is vertical,
-    /// axis 2 horizontal.
+    /// Axis 1 is vertical, axis 2 horizontal.
+    ///
+    /// `wheel1` is a *fixed* parameter and only the axes after it are variadic
+    /// — the C declaration is `..., CGWheelCount wheelCount, int32_t wheel1,
+    /// ...)`. Getting that boundary wrong is not a cosmetic detail on Apple
+    /// silicon, where the arm64 calling convention passes fixed arguments in
+    /// registers and variadic ones on the stack. Declared with `wheel1` inside
+    /// the variadic part, every axis lands one position out: the vertical
+    /// delta is read as the horizontal one, and the vertical axis picks up
+    /// whatever happened to be in the register.
     pub fn CGEventCreateScrollWheelEvent(
         source: CGEventSourceRef,
         units: u32,
         wheelCount: u32,
+        wheel1: i32,
         ...
     ) -> CGEventRef;
 

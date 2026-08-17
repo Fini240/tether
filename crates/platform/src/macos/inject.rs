@@ -382,6 +382,45 @@ pub fn flags_from_modifiers(mods: Modifiers) -> u64 {
 mod tests {
     use super::*;
 
+    /// A scroll event has to carry the deltas it was handed, on the axes it
+    /// was handed them for.
+    ///
+    /// `CGEventCreateScrollWheelEvent` is variadic from the *second* wheel
+    /// onwards, and Apple's arm64 convention passes fixed arguments in
+    /// registers and variadic ones on the stack. Declaring `wheel1` on the
+    /// wrong side of that boundary still compiles and still returns a
+    /// perfectly valid scroll event — it just has the vertical delta sitting
+    /// on the horizontal axis, and a vertical axis holding whatever was left
+    /// in the register. Which is why scrolling a Mac from another machine
+    /// appeared to do nothing whatsoever.
+    #[test]
+    fn a_scroll_event_carries_the_deltas_it_was_given() {
+        for (vertical, horizontal) in [(3i32, 0i32), (-3, 0), (1, 0), (0, 2), (0, -5)] {
+            unsafe {
+                let event = CGEventCreateScrollWheelEvent(
+                    ptr::null_mut(),
+                    kCGScrollEventUnitLine,
+                    2,
+                    vertical,
+                    horizontal,
+                );
+                assert!(!event.is_null(), "no event for ({vertical}, {horizontal})");
+                let axis1 = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1);
+                let axis2 = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis2);
+                CFRelease(event);
+
+                assert_eq!(
+                    axis1, vertical as i64,
+                    "vertical delta of ({vertical}, {horizontal}) landed wrong"
+                );
+                assert_eq!(
+                    axis2, horizontal as i64,
+                    "horizontal delta of ({vertical}, {horizontal}) landed wrong"
+                );
+            }
+        }
+    }
+
     #[test]
     fn modifier_flags_round_trip() {
         for mods in [

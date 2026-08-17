@@ -234,7 +234,14 @@ pub enum InputEvent {
         button: MouseButton,
         pressed: bool,
     },
-    /// Scroll deltas in lines. Fractional to carry high-resolution trackpads.
+    /// Scroll deltas in wheel detents: 1.0 is one click of a mouse wheel.
+    ///
+    /// A detent rather than a distance, because how far one is worth is a
+    /// per-machine preference — Windows expands it by the user's
+    /// lines-per-notch setting and macOS by its own scroll speed. Sending a
+    /// distance would carry the sending machine's preference to a machine
+    /// whose owner already chose their own. Fractional to carry
+    /// high-resolution wheels and trackpads.
     MouseWheel {
         dx: f32,
         dy: f32,
