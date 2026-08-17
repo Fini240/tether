@@ -243,7 +243,19 @@ extern "C" fn tap_callback(
             if dx == 0 && dy == 0 {
                 return pass_through(shared, event);
             }
-            Some(LocalEvent::MouseDelta { dx, dy })
+            if shared.swallow.load(Ordering::SeqCst) {
+                // Suppressed: the cursor is not moving, so its position says
+                // nothing. Only the device movement is real.
+                Some(LocalEvent::MouseDelta { dx, dy })
+            } else {
+                let at = unsafe { CGEventGetLocation(event) };
+                Some(LocalEvent::MouseMoved {
+                    x: at.x as i32,
+                    y: at.y as i32,
+                    dx,
+                    dy,
+                })
+            }
         }
 
         kCGEventLeftMouseDown

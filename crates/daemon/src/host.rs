@@ -613,7 +613,9 @@ fn is_deliberate(event: &LocalEvent) -> bool {
     match event {
         LocalEvent::Key { pressed, .. } => *pressed,
         LocalEvent::Button { pressed, .. } => *pressed,
-        LocalEvent::MouseDelta { dx, dy } => dx.abs() + dy.abs() >= 3,
+        LocalEvent::MouseDelta { dx, dy } | LocalEvent::MouseMoved { dx, dy, .. } => {
+            dx.abs() + dy.abs() >= 3
+        }
         LocalEvent::Wheel { dx, dy } => dx.abs() + dy.abs() >= 1.0,
     }
 }
@@ -672,20 +674,22 @@ fn handle_local(
     input_owner: MachineId,
 ) -> Result<()> {
     match local {
+        LocalEvent::MouseMoved { x, y, dx, dy } => {
+            // Reported by the machine whose own cursor moved, so it is the
+            // authority on where the pointer now is — including any sideways
+            // slide its OS performed crossing between screens of different
+            // heights, which adding up device movement can never predict.
+            //
+            // The delta still decides crossings: once the pointer is pinned
+            // against the outer edge of that desktop the position stops
+            // changing while the user is plainly still pushing.
+            router.resync_on(input_owner, Point::new(x, y));
+            let transition = router.move_by(dx, dy);
+            apply_transition(transition, router, clients, backend, input_owner);
+            Ok(())
+        }
+
         LocalEvent::MouseDelta { dx, dy } => {
-            // When this machine both owns the input and holds the pointer, its
-            // own OS is the authority on where the pointer is — nothing is
-            // being injected here. Take that position before deciding
-            // anything, or a desktop whose monitors are not aligned drifts out
-            // of step and edges stop working where the pointer plainly is.
-            if input_owner == router.host()
-                && router.active() == router.host()
-                && backend.pointer.tracks_system_cursor()
-            {
-                if let Ok(local) = backend.pointer.position() {
-                    router.resync_from_local(local);
-                }
-            }
             let transition = router.move_by(dx, dy);
             apply_transition(transition, router, clients, backend, input_owner);
             Ok(())
@@ -947,6 +951,7 @@ fn handle_client_frame(
             }
             let local = match event {
                 SourceEvent::MouseDelta { dx, dy } => LocalEvent::MouseDelta { dx, dy },
+                SourceEvent::MouseMoved { x, y, dx, dy } => LocalEvent::MouseMoved { x, y, dx, dy },
                 SourceEvent::Button { button, pressed } => LocalEvent::Button { button, pressed },
                 SourceEvent::Wheel { dx, dy } => LocalEvent::Wheel { dx, dy },
                 SourceEvent::Key {

@@ -104,8 +104,30 @@ impl CursorRouter {
     /// Called with the OS position before each move, so the two can never
     /// drift further apart than a single event.
     pub fn resync_from_local(&mut self, local: Point) {
-        if let Some(placement) = self.layout.get(self.host) {
-            self.position = local + placement.origin;
+        let host = self.host;
+        self.resync_on(host, local);
+    }
+
+    /// Adopt a position reported by `machine`, in that machine's own space.
+    ///
+    /// Only meaningful from the machine whose own cursor is moving — that is,
+    /// the one being physically touched while it also holds the pointer.
+    /// Anywhere else the cursor is either pinned or under our control, and its
+    /// position says nothing.
+    pub fn resync_on(&mut self, machine: MachineId, local: Point) {
+        if let Some(placement) = self.layout.get(machine) {
+            let global = local + placement.origin;
+            // Ignore a position outside that machine's own screens: it would
+            // mean the report and the layout disagree, and trusting it would
+            // teleport the pointer somewhere nobody asked for.
+            if placement
+                .monitors
+                .iter()
+                .any(|m| placement.global_rect_of(m).contains(global))
+            {
+                self.position = global;
+                self.active = machine;
+            }
         }
     }
 
@@ -420,6 +442,18 @@ mod resync_tests {
             monitors: monitors(&[(0, 0, 1710, 1112)]),
         });
         CursorRouter::new(layout, MachineId(1))
+    }
+
+    #[test]
+    fn a_reported_position_outside_that_machine_is_ignored() {
+        // A machine reporting a position its own screens do not contain means
+        // the report and the layout disagree. Believing it would teleport the
+        // pointer somewhere nobody asked for; the previous position is a far
+        // better guess than a contradictory one.
+        let mut router = ragged();
+        router.resync_from_local(Point::new(800, 1270));
+        router.resync_on(MachineId(1), Point::new(900, 9999));
+        assert_eq!(router.position(), Point::new(800, 1270));
     }
 
     #[test]

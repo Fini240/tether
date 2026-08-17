@@ -192,6 +192,14 @@ pub enum SourceEvent {
         dx: i32,
         dy: i32,
     },
+    /// Absolute position in the reporting machine's own space, plus the device
+    /// movement. Sent while that machine's own cursor is the one moving.
+    MouseMoved {
+        x: i32,
+        y: i32,
+        dx: i32,
+        dy: i32,
+    },
     Button {
         button: MouseButton,
         pressed: bool,

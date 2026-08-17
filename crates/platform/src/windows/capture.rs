@@ -342,10 +342,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             }
 
             if delta != (0, 0) {
-                shared.emit(LocalEvent::MouseDelta {
-                    dx: delta.0,
-                    dy: delta.1,
-                });
+                if swallowing {
+                    shared.emit(LocalEvent::MouseDelta {
+                        dx: delta.0,
+                        dy: delta.1,
+                    });
+                } else {
+                    // `pt` is where the OS is about to put the pointer, seam
+                    // adjustments and all. Far better than differencing, and
+                    // it cannot race anything.
+                    shared.emit(LocalEvent::MouseMoved {
+                        x: info.pt.x,
+                        y: info.pt.y,
+                        dx: delta.0,
+                        dy: delta.1,
+                    });
+                }
             }
         }
 

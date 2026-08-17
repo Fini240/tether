@@ -39,7 +39,31 @@ impl PlatformError {
 /// what the user is doing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalEvent {
+    /// Movement with nowhere authoritative to read it from: the pointer is on
+    /// another machine, so this one's cursor is pinned and only the device
+    /// movement is meaningful.
     MouseDelta {
+        dx: i32,
+        dy: i32,
+    },
+
+    /// Movement while this machine's own cursor is the one moving, carrying
+    /// both where the OS has put it and how far the device moved.
+    ///
+    /// The position is what the OS itself decided, which is the only thing
+    /// that stays right across a desktop whose monitors are not aligned — the
+    /// OS slides the pointer sideways crossing between them, and no amount of
+    /// adding up device movement predicts that. Reading it back from
+    /// `GetCursorPos` on another thread races the OS applying the move; the
+    /// hook and the event tap are both handed it directly.
+    ///
+    /// The delta still matters: once the pointer is pinned against the outer
+    /// edge of the desktop, the position stops changing while the user is
+    /// plainly still pushing, and that push is what crosses to the next
+    /// machine.
+    MouseMoved {
+        x: i32,
+        y: i32,
         dx: i32,
         dy: i32,
     },
@@ -99,18 +123,6 @@ pub trait InputInject: Send + Sync {
 
 pub trait Pointer: Send + Sync {
     fn position(&self) -> Result<Point>;
-
-    /// Whether `position` reflects a real system cursor that the OS moves on
-    /// its own.
-    ///
-    /// The router treats a real cursor as the authority on where the pointer
-    /// is, which is what keeps it in step across a multi-monitor desktop whose
-    /// screens are not aligned. A backend with no system cursor must say so:
-    /// resynchronising against one that only moves when *we* move it pins the
-    /// router in place and nothing ever crosses.
-    fn tracks_system_cursor(&self) -> bool {
-        true
-    }
 
     /// Move the cursor without generating a motion event.
     fn warp(&self, to: Point) -> Result<()>;

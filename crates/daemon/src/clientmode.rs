@@ -75,7 +75,9 @@ fn is_deliberate(event: &LocalEvent) -> bool {
     match event {
         LocalEvent::Key { pressed, .. } => *pressed,
         LocalEvent::Button { pressed, .. } => *pressed,
-        LocalEvent::MouseDelta { dx, dy } => dx.abs() + dy.abs() >= 3,
+        LocalEvent::MouseDelta { dx, dy } | LocalEvent::MouseMoved { dx, dy, .. } => {
+            dx.abs() + dy.abs() >= 3
+        }
         LocalEvent::Wheel { dx, dy } => dx.abs() + dy.abs() >= 1.0,
     }
 }
@@ -83,6 +85,7 @@ fn is_deliberate(event: &LocalEvent) -> bool {
 fn to_source(event: LocalEvent) -> SourceEvent {
     match event {
         LocalEvent::MouseDelta { dx, dy } => SourceEvent::MouseDelta { dx, dy },
+        LocalEvent::MouseMoved { x, y, dx, dy } => SourceEvent::MouseMoved { x, y, dx, dy },
         LocalEvent::Button { button, pressed } => SourceEvent::Button { button, pressed },
         LocalEvent::Wheel { dx, dy } => SourceEvent::Wheel { dx, dy },
         LocalEvent::Key {
