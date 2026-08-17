@@ -673,6 +673,19 @@ fn handle_local(
 ) -> Result<()> {
     match local {
         LocalEvent::MouseDelta { dx, dy } => {
+            // When this machine both owns the input and holds the pointer, its
+            // own OS is the authority on where the pointer is — nothing is
+            // being injected here. Take that position before deciding
+            // anything, or a desktop whose monitors are not aligned drifts out
+            // of step and edges stop working where the pointer plainly is.
+            if input_owner == router.host()
+                && router.active() == router.host()
+                && backend.pointer.tracks_system_cursor()
+            {
+                if let Ok(local) = backend.pointer.position() {
+                    router.resync_from_local(local);
+                }
+            }
             let transition = router.move_by(dx, dy);
             apply_transition(transition, router, clients, backend, input_owner);
             Ok(())

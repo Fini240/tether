@@ -90,6 +90,25 @@ impl CursorRouter {
         }
     }
 
+    /// Adopt the operating system's idea of where the pointer is.
+    ///
+    /// While the machine holding the pointer is also the one being touched, we
+    /// do not inject anything there — its own OS moves the cursor and this
+    /// router only follows along by adding up deltas. Those two can disagree:
+    /// pointer acceleration, and above all a multi-monitor desktop whose
+    /// screens are not aligned, where the OS slides the pointer sideways as it
+    /// crosses a seam. Once they disagree the router believes the pointer is
+    /// somewhere it is not, and refuses to cross an edge the pointer is
+    /// visibly sitting on.
+    ///
+    /// Called with the OS position before each move, so the two can never
+    /// drift further apart than a single event.
+    pub fn resync_from_local(&mut self, local: Point) {
+        if let Some(placement) = self.layout.get(self.host) {
+            self.position = local + placement.origin;
+        }
+    }
+
     /// Force the cursor back to the host's primary monitor.
     pub fn recall_to_host(&mut self) -> Option<Located> {
         let center = self.layout.center_of(self.host)?;
@@ -359,5 +378,80 @@ mod tests {
 
         assert_eq!(r.active(), MachineId(1));
         assert_eq!(r.position(), Point::new(960, 540));
+    }
+}
+
+#[cfg(test)]
+mod resync_tests {
+    use super::*;
+    use crate::layout::Placement;
+    use tether_proto::{MonitorId, MonitorInfo, Platform, Rect};
+
+    /// A desktop whose two screens sit at different heights, with a machine
+    /// below the shorter one — the arrangement that exposed the drift.
+    fn ragged() -> CursorRouter {
+        let monitors = |rects: &[(i32, i32, i32, i32)]| -> Vec<MonitorInfo> {
+            rects
+                .iter()
+                .enumerate()
+                .map(|(i, (x, y, w, h))| MonitorInfo {
+                    id: MonitorId(i as u32),
+                    name: format!("m{i}"),
+                    bounds: Rect::new(*x, *y, *w, *h),
+                    scale: 1.0,
+                    primary: i == 0,
+                })
+                .collect()
+        };
+
+        let mut layout = Layout::new();
+        layout.machines.push(Placement {
+            machine: MachineId(1),
+            name: "pc".into(),
+            platform: Platform::Windows,
+            origin: Point::new(0, 0),
+            monitors: monitors(&[(0, 200, 1920, 1080), (1920, 0, 2560, 1440)]),
+        });
+        layout.machines.push(Placement {
+            machine: MachineId(2),
+            name: "mac".into(),
+            platform: Platform::MacOS,
+            origin: Point::new(0, 1280),
+            monitors: monitors(&[(0, 0, 1710, 1112)]),
+        });
+        CursorRouter::new(layout, MachineId(1))
+    }
+
+    #[test]
+    fn resync_adopts_the_systems_position() {
+        let mut router = ragged();
+        router.resync_from_local(Point::new(2500, 700));
+        assert_eq!(router.position(), Point::new(2500, 700));
+    }
+
+    #[test]
+    fn resync_recovers_after_the_os_moves_the_pointer_itself() {
+        // Crossing between two screens of different heights, the OS slides the
+        // pointer to a row the next screen actually has. The router did not
+        // see that happen; without adopting the new position it goes on
+        // believing the pointer is somewhere with no screen under it, and
+        // refuses to cross an edge the pointer is visibly sitting on.
+        let mut router = ragged();
+
+        // The router last saw the pointer high on the right-hand screen.
+        router.resync_from_local(Point::new(2600, 300));
+        // The OS has since carried it onto the left-hand screen, near the
+        // bottom — a move this router never added up.
+        router.resync_from_local(Point::new(800, 1270));
+        assert_eq!(router.position(), Point::new(800, 1270));
+        assert_eq!(router.active(), MachineId(1));
+
+        // Pushing down from where the pointer really is reaches the machine
+        // below. Working from the stale position it would instead be pushing
+        // off the bottom of the right-hand screen into empty canvas.
+        match router.move_by(0, 40) {
+            Transition::Switch { to, .. } => assert_eq!(to.machine, MachineId(2)),
+            other => panic!("did not cross after the OS moved the pointer: {other:?}"),
+        }
     }
 }

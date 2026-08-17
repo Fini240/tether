@@ -100,6 +100,18 @@ pub trait InputInject: Send + Sync {
 pub trait Pointer: Send + Sync {
     fn position(&self) -> Result<Point>;
 
+    /// Whether `position` reflects a real system cursor that the OS moves on
+    /// its own.
+    ///
+    /// The router treats a real cursor as the authority on where the pointer
+    /// is, which is what keeps it in step across a multi-monitor desktop whose
+    /// screens are not aligned. A backend with no system cursor must say so:
+    /// resynchronising against one that only moves when *we* move it pins the
+    /// router in place and nothing ever crosses.
+    fn tracks_system_cursor(&self) -> bool {
+        true
+    }
+
     /// Move the cursor without generating a motion event.
     fn warp(&self, to: Point) -> Result<()>;
 

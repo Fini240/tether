@@ -208,11 +208,16 @@ pub fn show(
 }
 
 /// Place `machine` against its nearest neighbour, on whichever side the drop
-/// position points at.
+/// points at, at the position along that edge where it was dropped.
 ///
-/// The dropped position decides the *direction*, not the coordinates. Honouring
-/// the exact pixels would let a user leave a one-pixel gap, or a slight overlap,
-/// and both make edge crossing behave in ways that look like bugs.
+/// The drop decides the side *and* where along it — only the perpendicular
+/// coordinate is snapped. Snapping both, which is what centring does, makes a
+/// machine impossible to put under one screen of a two-screen desktop: it
+/// always lands under the middle, which with unequal screens can be under the
+/// gap between them, touching neither.
+///
+/// The perpendicular axis is still snapped flush. A hand-placed gap is canvas
+/// belonging to no monitor, and the pointer stops dead in it.
 fn snap(
     layout: &Layout,
     machine: MachineId,
@@ -244,23 +249,38 @@ fn snap(
         .map(|p| p.machine)?;
 
     let anchor_rect = next.get(anchor)?.global_bounds();
-    let dx = dropped_centre.0 - (anchor_rect.x + anchor_rect.width / 2);
-    let dy = dropped_centre.1 - (anchor_rect.y + anchor_rect.height / 2);
 
-    // Whichever axis the drop leans on more wins, so dragging mostly sideways
-    // never snaps a screen above or below.
-    let side = if dx.abs() >= dy.abs() {
-        if dx < 0 {
+    // How far outside the anchor the drop sits on each axis. Comparing these
+    // rather than centre offsets is what lets a small machine be dropped below
+    // a wide one: against a 3840-wide desktop the horizontal centre offset
+    // dominates almost everywhere, so centre comparison would call nearly
+    // every drop "left" or "right".
+    let out_left = anchor_rect.left() - dropped.right();
+    let out_right = dropped.left() - anchor_rect.right();
+    let out_above = anchor_rect.top() - dropped.bottom();
+    let out_below = dropped.top() - anchor_rect.bottom();
+
+    let horizontal = out_left.max(out_right);
+    let vertical = out_above.max(out_below);
+
+    let side = if horizontal >= vertical {
+        if out_left >= out_right {
             Side::Left
         } else {
             Side::Right
         }
-    } else if dy < 0 {
+    } else if out_above >= out_below {
         Side::Above
     } else {
         Side::Below
     };
 
-    next.place_relative(machine, side, anchor).ok()?;
+    // Keep where it was dropped along the shared edge.
+    let along = match side {
+        Side::Left | Side::Right => dropped.y,
+        Side::Above | Side::Below => dropped.x,
+    };
+
+    next.place_flush(machine, side, anchor, along).ok()?;
     Some(next)
 }

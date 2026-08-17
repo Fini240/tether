@@ -226,6 +226,13 @@ impl Pointer for HeadlessPointer {
             .cursor_visible = visible;
         Ok(())
     }
+
+    fn tracks_system_cursor(&self) -> bool {
+        // There is no system cursor here. The recorded position only changes
+        // when something warps or injects, so it says nothing about where a
+        // user has moved a pointer.
+        false
+    }
 }
 
 struct HeadlessMonitors {

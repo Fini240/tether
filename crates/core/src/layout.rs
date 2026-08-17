@@ -124,6 +124,44 @@ impl std::fmt::Display for Side {
     }
 }
 
+/// Least border two machines must share for the pointer to have somewhere to
+/// cross. Touching at a corner is technically adjacent and practically useless.
+pub const MIN_SHARED_EDGE: i32 = 120;
+
+/// The edge to sit flush against, taken from the screens that actually face
+/// `span` rather than from the whole desktop's bounding box.
+///
+/// A desktop whose monitors sit at different heights has a bounding box larger
+/// than either screen. Aligning to it puts a machine level with empty canvas —
+/// adjacent to nothing, with no edge for the pointer to cross.
+fn neighbouring_edge(monitors: &[Rect], side: Side, span: (i32, i32), fallback: Rect) -> i32 {
+    let facing: Vec<&Rect> = monitors
+        .iter()
+        .filter(|m| match side {
+            // Overlap along the shared axis, by more than a shared corner.
+            Side::Left | Side::Right => m.bottom() > span.0 && m.top() < span.1,
+            Side::Above | Side::Below => m.right() > span.0 && m.left() < span.1,
+        })
+        .collect();
+
+    if facing.is_empty() {
+        return match side {
+            Side::Left => fallback.left(),
+            Side::Right => fallback.right(),
+            Side::Above => fallback.top(),
+            Side::Below => fallback.bottom(),
+        };
+    }
+
+    match side {
+        Side::Left => facing.iter().map(|m| m.left()).min(),
+        Side::Right => facing.iter().map(|m| m.right()).max(),
+        Side::Above => facing.iter().map(|m| m.top()).min(),
+        Side::Below => facing.iter().map(|m| m.bottom()).max(),
+    }
+    .expect("facing is not empty")
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     pub machines: Vec<Placement>,
@@ -203,6 +241,87 @@ impl Layout {
         ))
     }
 
+    /// Move `machine` flush against `anchor` on the given side, positioned
+    /// along that edge by `along`.
+    ///
+    /// `along` is the machine's bounding-box left edge for `Above`/`Below`, or
+    /// its top edge for `Left`/`Right`. Centring is only one choice, and a poor
+    /// one when the anchor is a multi-monitor desktop: centring under a pair of
+    /// screens can leave a machine under the gap between them, touching
+    /// neither, with no edge to cross.
+    ///
+    /// The result is clamped so the two always share at least
+    /// [`MIN_SHARED_EDGE`] of border. A placement touching at one corner is
+    /// reachable only by hitting a single pixel exactly.
+    pub fn place_flush(
+        &mut self,
+        machine: MachineId,
+        side: Side,
+        anchor: MachineId,
+        along: i32,
+    ) -> Result<(), String> {
+        if machine == anchor {
+            return Err("a machine cannot be placed relative to itself".into());
+        }
+
+        let anchor_rect = self
+            .get(anchor)
+            .ok_or_else(|| format!("machine {anchor} is not on the canvas"))?
+            .global_bounds();
+        let local = self
+            .get(machine)
+            .ok_or_else(|| format!("machine {machine} is not on the canvas"))?
+            .local_bounds();
+        if local.width == 0 || local.height == 0 {
+            return Err(format!("machine {machine} reports no displays"));
+        }
+
+        let anchor_monitors: Vec<Rect> = self
+            .get(anchor)
+            .map(|p| p.monitors.iter().map(|m| p.global_rect_of(m)).collect())
+            .unwrap_or_default();
+
+        let (x, y) = match side {
+            Side::Left | Side::Right => {
+                let overlap = MIN_SHARED_EDGE.min(local.height).min(anchor_rect.height);
+                let y = along.clamp(
+                    anchor_rect.top() - local.height + overlap,
+                    anchor_rect.bottom() - overlap,
+                );
+                // Align to the edge of the screens actually alongside this
+                // span, not to the whole desktop's bounding box. On a desktop
+                // whose monitors are not level, the bounding box extends past
+                // the shorter one, and aligning to it leaves a band of canvas
+                // belonging to no monitor — which the pointer cannot cross.
+                let span = (y, y + local.height);
+                let edge = neighbouring_edge(&anchor_monitors, side, span, anchor_rect);
+                let x = match side {
+                    Side::Left => edge - local.width,
+                    _ => edge,
+                };
+                (x, y)
+            }
+            Side::Above | Side::Below => {
+                let overlap = MIN_SHARED_EDGE.min(local.width).min(anchor_rect.width);
+                let x = along.clamp(
+                    anchor_rect.left() - local.width + overlap,
+                    anchor_rect.right() - overlap,
+                );
+                let span = (x, x + local.width);
+                let edge = neighbouring_edge(&anchor_monitors, side, span, anchor_rect);
+                let y = match side {
+                    Side::Above => edge - local.height,
+                    _ => edge,
+                };
+                (x, y)
+            }
+        };
+
+        let placement = self.get_mut(machine).expect("checked above");
+        placement.origin = Point::new(x - local.x, y - local.y);
+        Ok(())
+    }
+
     /// Move `machine` so it sits flush against `anchor` on the given side,
     /// centred on the shared edge.
     ///
@@ -215,47 +334,20 @@ impl Layout {
         side: Side,
         anchor: MachineId,
     ) -> Result<(), String> {
-        if machine == anchor {
-            return Err("a machine cannot be placed relative to itself".into());
-        }
-
         let anchor_rect = self
             .get(anchor)
             .ok_or_else(|| format!("machine {anchor} is not on the canvas"))?
             .global_bounds();
-        let placement = self
+        let local = self
             .get(machine)
-            .ok_or_else(|| format!("machine {machine} is not on the canvas"))?;
+            .ok_or_else(|| format!("machine {machine} is not on the canvas"))?
+            .local_bounds();
 
-        let local = placement.local_bounds();
-        if local.width == 0 || local.height == 0 {
-            return Err(format!("machine {machine} reports no displays"));
-        }
-
-        // Target position of the machine's *bounding box*, then back out the
-        // origin that puts it there.
-        let (x, y) = match side {
-            Side::Left => (
-                anchor_rect.left() - local.width,
-                anchor_rect.top() + (anchor_rect.height - local.height) / 2,
-            ),
-            Side::Right => (
-                anchor_rect.right(),
-                anchor_rect.top() + (anchor_rect.height - local.height) / 2,
-            ),
-            Side::Above => (
-                anchor_rect.left() + (anchor_rect.width - local.width) / 2,
-                anchor_rect.top() - local.height,
-            ),
-            Side::Below => (
-                anchor_rect.left() + (anchor_rect.width - local.width) / 2,
-                anchor_rect.bottom(),
-            ),
+        let along = match side {
+            Side::Left | Side::Right => anchor_rect.top() + (anchor_rect.height - local.height) / 2,
+            Side::Above | Side::Below => anchor_rect.left() + (anchor_rect.width - local.width) / 2,
         };
-
-        let placement = self.get_mut(machine).expect("checked above");
-        placement.origin = Point::new(x - local.x, y - local.y);
-        Ok(())
+        self.place_flush(machine, side, anchor, along)
     }
 
     /// Find a machine by name (case-insensitive) or by the start of its id.
@@ -519,5 +611,107 @@ mod tests {
         let p = layout.get(MachineId(1)).unwrap();
         assert_eq!(p.origin, Point::new(500, 500));
         assert_eq!(p.local_bounds().width, 2560);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    fn mon(w: i32, h: i32, x: i32, y: i32) -> MonitorInfo {
+        MonitorInfo {
+            id: MonitorId(x as u32),
+            name: "m".into(),
+            bounds: Rect::new(x, y, w, h),
+            scale: 1.0,
+            primary: x == 0,
+        }
+    }
+
+    fn placed(id: u64, monitors: Vec<MonitorInfo>) -> Placement {
+        Placement {
+            machine: MachineId(id),
+            name: format!("m{id}"),
+            platform: Platform::Windows,
+            origin: Point::new(0, 0),
+            monitors,
+        }
+    }
+
+    /// A PC with two screens at different heights, and a laptop to put under
+    /// one of them — the case that could not be expressed before.
+    fn mismatched_desktop() -> Layout {
+        let mut layout = Layout::new();
+        layout.auto_place(placed(
+            1,
+            vec![mon(1920, 1080, 0, 200), mon(2560, 1440, 1920, 0)],
+        ));
+        layout.auto_place(placed(2, vec![mon(1710, 1112, 0, 0)]));
+        layout
+    }
+
+    #[test]
+    fn a_machine_can_sit_under_one_screen_of_a_two_screen_desktop() {
+        let mut layout = mismatched_desktop();
+        let pc = layout.get(MachineId(1)).unwrap();
+        let pc_bounds = pc.global_bounds();
+        // The shorter, lower-hanging screen — the one being sat under.
+        let left_screen = pc.global_rect_of(&pc.monitors[0]);
+
+        layout
+            .place_flush(MachineId(2), Side::Below, MachineId(1), pc_bounds.left())
+            .unwrap();
+
+        let mac = layout.get(MachineId(2)).unwrap().global_bounds();
+        assert_eq!(
+            mac.top(),
+            left_screen.bottom(),
+            "must touch the screen it sits under, not the desktop's bounding box \
+             — the two differ by {}px here, and that band belongs to no monitor",
+            pc_bounds.bottom() - left_screen.bottom()
+        );
+        assert_eq!(mac.left(), pc_bounds.left(), "must stay where it was put");
+    }
+
+    #[test]
+    fn placement_along_an_edge_keeps_enough_shared_border() {
+        let mut layout = mismatched_desktop();
+        let pc = layout.get(MachineId(1)).unwrap().global_bounds();
+
+        // Dropped far off to one side: clamped back to a usable overlap
+        // rather than left touching at a corner or floating free.
+        layout
+            .place_flush(MachineId(2), Side::Below, MachineId(1), pc.right() + 5000)
+            .unwrap();
+
+        let mac = layout.get(MachineId(2)).unwrap().global_bounds();
+        let shared = pc.right().min(mac.right()) - pc.left().max(mac.left());
+        assert!(
+            shared >= MIN_SHARED_EDGE,
+            "only {shared}px of shared edge, the pointer would have nowhere to cross"
+        );
+    }
+
+    #[test]
+    fn a_machine_placed_below_is_reachable_by_moving_down() {
+        use crate::transition::{CursorRouter, Transition};
+
+        let mut layout = mismatched_desktop();
+        let pc = layout.get(MachineId(1)).unwrap().global_bounds();
+        layout
+            .place_flush(MachineId(2), Side::Below, MachineId(1), pc.left())
+            .unwrap();
+
+        let mut router = CursorRouter::new(layout, MachineId(1));
+        // Start over the left-hand screen, then push down through its bottom.
+        router.jump_to(MachineId(1));
+        let mut crossed = false;
+        for _ in 0..40 {
+            if let Transition::Switch { to, .. } = router.move_by(-20, 120) {
+                crossed = to.machine == MachineId(2);
+                break;
+            }
+        }
+        assert!(crossed, "could not reach the machine placed below");
     }
 }
