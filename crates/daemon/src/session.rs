@@ -26,6 +26,35 @@ pub fn welcome(config: &Config, identity: &Identity) -> Welcome {
     }
 }
 
+/// Resolves when the process is asked to stop.
+///
+/// Ctrl-C *and* SIGTERM. SIGTERM is what `launchctl` sends, and what
+/// Tether.app's Stop button sends — without it, quitting from the menu bar
+/// skipped the clean shutdown entirely: no goodbye to clients, no release of
+/// held keys, and the screen arrangement never written back to disk.
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(term) => term,
+            Err(err) => {
+                tracing::warn!(%err, "cannot listen for SIGTERM; Ctrl-C only");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// Refuse a peer on a different protocol version.
 ///
 /// Silently tolerating a mismatch is not an option here: the frames would still

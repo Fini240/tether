@@ -171,6 +171,12 @@ impl InputCapture for HeadlessCapture {
             .expect("headless mutex poisoned")
             .swallowing = swallow;
     }
+
+    fn injected_filtered(&self) -> u64 {
+        // Headless injection never reaches a capture path, so there is
+        // nothing to filter and the count is honestly zero.
+        0
+    }
 }
 
 struct HeadlessInject {

@@ -93,6 +93,9 @@ pub const kCGKeyboardEventAutorepeat: u32 = 8;
 pub const kCGKeyboardEventKeycode: u32 = 9;
 pub const kCGScrollWheelEventDeltaAxis1: u32 = 11;
 pub const kCGScrollWheelEventDeltaAxis2: u32 = 12;
+/// Free-form 64 bits that ride along with an event and survive a round trip
+/// through an event tap. Used to label our own injections.
+pub const kCGEventSourceUserData: u32 = 42;
 
 // ---- CGEventTapLocation / Placement / Options ----
 pub const kCGHIDEventTap: u32 = 0;

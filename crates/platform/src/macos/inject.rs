@@ -10,6 +10,10 @@ use super::ffi::*;
 use super::keycodes::hid_to_vk;
 use crate::traits::{InputInject, PlatformError, Result};
 
+/// Stamped into `kCGEventSourceUserData` on everything we synthesise.
+/// Arbitrary; just needs to be a value nothing else plausibly writes.
+pub const TETHER_EVENT_MARK: i64 = 0x7E7_4E12_D1CE;
+
 /// Everything the injector must remember between events.
 ///
 /// A synthesised event carries no context, so we supply it: a mouse-up needs a
@@ -50,6 +54,12 @@ impl MacInject {
         }
         unsafe {
             CGEventSetFlags(event, flags);
+            // Label it as ours. Our own event tap reads this back and drops
+            // the event instead of reporting it as somebody touching this
+            // machine's keyboard — without which, a machine being driven
+            // remotely would instantly claim input back and the two ends
+            // would fight over who is driving.
+            CGEventSetIntegerValueField(event, kCGEventSourceUserData, TETHER_EVENT_MARK);
             // Post at the HID level so the event reaches every application,
             // including ones that install their own session-level taps.
             CGEventPost(kCGHIDEventTap, event);

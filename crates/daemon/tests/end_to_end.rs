@@ -274,3 +274,91 @@ async fn wait_for(handle: &HeadlessHandle, count: usize) -> Vec<InputEvent> {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// Touching a client's keyboard should take control away from the host.
+///
+/// This is the half of input handoff that cannot be checked by inspection: it
+/// spans a claim from the client, arbitration on the host, the cursor
+/// following, and an `Enter` coming back. The marker that stops the two ends
+/// fighting over control is platform-specific and is covered by
+/// `tether doctor` instead — the headless backend injects nowhere, so there is
+/// nothing for it to filter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn touching_a_client_hands_control_to_it() {
+    let harness = start("handoff").await;
+
+    // The host starts out driving, with the cursor on its own screen.
+    let client_start = harness.client_output.cursor();
+
+    // Somebody puts a hand on the client's trackpad.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut moved = false;
+    while tokio::time::Instant::now() < deadline {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: 40, dy: 40 });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // cursor_follows_input brings the pointer to the machine being
+        // touched, which arrives as an Enter and warps the cursor to the
+        // centre of its screen.
+        let now = harness.client_output.cursor();
+        if now != client_start && now.x > 0 && now.y > 0 {
+            moved = true;
+            break;
+        }
+    }
+
+    assert!(
+        moved,
+        "the client touched its own trackpad and never got control"
+    );
+
+    // The host must not be suppressing its own input any more: it is no longer
+    // the machine being touched, and its user has to be able to take control
+    // back by touching it.
+    assert!(
+        !harness.host_input.is_swallowing(),
+        "the host is still swallowing its own input after handing control over"
+    );
+}
+
+/// ...and touching the host again takes it straight back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn touching_the_host_takes_control_back() {
+    let harness = start("handback").await;
+
+    // Hand control to the client first.
+    let client_start = harness.client_output.cursor();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: 40, dy: 40 });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if harness.client_output.cursor() != client_start {
+            break;
+        }
+    }
+    harness.client_output.clear_injected();
+
+    // Now touch the host.
+    harness
+        .host_input
+        .emit(LocalEvent::MouseDelta { dx: 40, dy: 40 });
+    tokio::time::sleep(Duration::from_millis(400).min(Duration::from_millis(400))).await;
+
+    // With the host driving and the cursor pulled back to it, the host handles
+    // its own pointer natively and sends the client nothing further.
+    harness.client_output.clear_injected();
+    harness
+        .host_input
+        .emit(LocalEvent::MouseDelta { dx: 5, dy: 5 });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        harness.client_output.injected().is_empty(),
+        "the host is still driving the client after taking control back: {:?}",
+        harness.client_output.injected()
+    );
+}

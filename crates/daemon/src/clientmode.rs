@@ -16,8 +16,8 @@ use tether_core::layout::MachineId;
 use tether_net::client::{connect, Backoff};
 use tether_net::tls::TrustStore;
 use tether_net::Identity;
-use tether_platform::{Backend, BackendKind};
-use tether_proto::{Frame, Platform, Point};
+use tether_platform::{Backend, BackendKind, LocalEvent};
+use tether_proto::{Frame, Point, SourceEvent};
 
 use crate::session;
 
@@ -25,6 +25,75 @@ pub struct Options {
     pub address: Option<String>,
     pub pairing: bool,
     pub config_path: PathBuf,
+}
+
+/// What this client believes about who is driving and where the cursor is.
+///
+/// Both are told to us by the host; a client never decides either for itself.
+/// Keeping them together makes the one rule that matters easy to state:
+/// suppress local input only while we are driving *and* the pointer is
+/// elsewhere.
+#[derive(Debug, Clone, Copy)]
+struct Ownership {
+    /// This machine's keyboard and mouse are the ones driving.
+    owns_input: bool,
+    /// The pointer is on this machine's screen.
+    cursor_here: bool,
+}
+
+impl Ownership {
+    fn new() -> Self {
+        Self {
+            owns_input: false,
+            cursor_here: false,
+        }
+    }
+
+    /// Suppress local input only when our own events are being sent elsewhere.
+    ///
+    /// Crucially this is false whenever we are *not* driving, which is what
+    /// keeps this machine's own trackpad alive so its user can take control
+    /// back by touching it — and what stops a dropped connection leaving the
+    /// keyboard dead.
+    fn should_swallow(&self) -> bool {
+        self.owns_input && !self.cursor_here
+    }
+
+    fn apply(&self, backend: &mut Backend) {
+        let swallow = self.should_swallow();
+        backend.capture.set_swallow(swallow);
+        let _ = backend.pointer.set_visible(!swallow);
+    }
+}
+
+/// Worth taking control for? Mirrors the host's rule: a pixel of drift should
+/// not steal control from the machine somebody is typing on.
+fn is_deliberate(event: &LocalEvent) -> bool {
+    match event {
+        LocalEvent::Key { pressed, .. } => *pressed,
+        LocalEvent::Button { pressed, .. } => *pressed,
+        LocalEvent::MouseDelta { dx, dy } => dx.abs() + dy.abs() >= 3,
+        LocalEvent::Wheel { dx, dy } => dx.abs() + dy.abs() >= 1.0,
+    }
+}
+
+fn to_source(event: LocalEvent) -> SourceEvent {
+    match event {
+        LocalEvent::MouseDelta { dx, dy } => SourceEvent::MouseDelta { dx, dy },
+        LocalEvent::Button { button, pressed } => SourceEvent::Button { button, pressed },
+        LocalEvent::Wheel { dx, dy } => SourceEvent::Wheel { dx, dy },
+        LocalEvent::Key {
+            key,
+            pressed,
+            modifiers,
+            repeat,
+        } => SourceEvent::Key {
+            key,
+            pressed,
+            modifiers,
+            repeat,
+        },
+    }
 }
 
 /// Why a session ended. Drives whether we back off before retrying.
@@ -67,6 +136,19 @@ pub async fn run(
         );
     }
 
+    // A client captures too, so touching its keyboard can take control. The
+    // channel outlives individual connections: the capture backend is started
+    // once, not re-armed on every reconnect.
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<LocalEvent>();
+    if config.options.auto_input_handoff {
+        if let Err(err) = backend.capture.start(input_tx) {
+            tracing::warn!(
+                %err,
+                "could not capture local input; this machine cannot take control by being touched"
+            );
+        }
+    }
+
     let mut backoff = Backoff::default();
 
     loop {
@@ -88,6 +170,7 @@ pub async fn run(
             &mut backend,
             &monitors,
             &options,
+            &mut input_rx,
         )
         .await;
 
@@ -110,8 +193,11 @@ pub async fn run(
             }
         }
 
-        // Always leave the machine in a clean state between sessions.
+        // Always leave the machine usable between sessions: never leave local
+        // input suppressed just because the link dropped mid-session.
         let _ = backend.inject.release_all();
+        backend.capture.set_swallow(false);
+        let _ = backend.pointer.set_visible(true);
 
         let delay = backoff.next_delay();
         tracing::debug!(?delay, "retrying");
@@ -119,7 +205,9 @@ pub async fn run(
     }
 
     let _ = backend.inject.release_all();
+    backend.capture.set_swallow(false);
     let _ = backend.pointer.set_visible(true);
+    backend.capture.stop();
     config.save(&options.config_path).ok();
     Ok(())
 }
@@ -170,6 +258,7 @@ async fn session_once(
     backend: &mut Backend,
     monitors: &[tether_proto::MonitorInfo],
     options: &Options,
+    input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<LocalEvent>,
 ) -> Result<Ended> {
     let connected = connect(address, identity, trust.clone()).await?;
     let host_fingerprint = connected.fingerprint;
@@ -237,12 +326,18 @@ async fn session_once(
 
     let mut clipboard_poll = tokio::time::interval(Duration::from_millis(500));
     let mut clipboard_seq: u64 = 0;
+    let mut ownership = Ownership::new();
+    ownership.apply(backend);
+
+    // Anything captured while disconnected is stale by now and would replay as
+    // a burst of movement the moment we reconnect.
+    while input_rx.try_recv().is_ok() {}
 
     loop {
         tokio::select! {
             biased;
 
-            _ = tokio::signal::ctrl_c() => {
+            _ = session::shutdown_signal() => {
                 STOP.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = connection.send(Frame::Bye("client shutting down".into())).await;
                 return Ok(Ended::Graceful);
@@ -261,10 +356,31 @@ async fn session_once(
                 };
 
                 if let Some(ended) =
-                    apply(frame, backend, &mut connection, config, welcome.platform).await?
+                    apply(
+                        frame,
+                        backend,
+                        &mut connection,
+                        config,
+                        &mut ownership,
+                        identity.machine_id.0,
+                    )
+                    .await?
                 {
                     return Ok(ended);
                 }
+            }
+
+            Some(event) = input_rx.recv(), if config.options.auto_input_handoff => {
+                if !ownership.owns_input {
+                    if !is_deliberate(&event) {
+                        continue;
+                    }
+                    // Ask; do not assume. The host arbitrates, and it replies
+                    // with InputOwner — which is what actually flips us over.
+                    tracing::debug!("local input detected; claiming control");
+                    connection.send(Frame::ClaimInput).await?;
+                }
+                connection.send(Frame::SourceInput(to_source(event))).await?;
             }
 
             _ = clipboard_poll.tick(), if config.options.sync_clipboard => {
@@ -295,7 +411,8 @@ async fn apply<S>(
     backend: &mut Backend,
     connection: &mut tether_net::Connection<S>,
     config: &Config,
-    _host_platform: Platform,
+    ownership: &mut Ownership,
+    my_machine: u64,
 ) -> Result<Option<Ended>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -306,7 +423,8 @@ where
             // pointer appears at the edge the user crossed rather than jumping
             // from wherever it was parked.
             let _ = backend.pointer.warp(Point::new(x, y));
-            let _ = backend.pointer.set_visible(true);
+            ownership.cursor_here = true;
+            ownership.apply(backend);
             tracing::debug!(x, y, "cursor entered this machine");
         }
 
@@ -314,6 +432,8 @@ where
             // Release before the host starts sending to someone else, or a
             // modifier held during the crossing stays down here forever.
             let _ = backend.inject.release_all();
+            ownership.cursor_here = false;
+            ownership.apply(backend);
             tracing::debug!("cursor left this machine");
 
             if config.options.lock_screen_on_leave {
@@ -333,6 +453,22 @@ where
             if let Err(err) = backend.inject.inject(&event) {
                 tracing::warn!(%err, "injection failed");
             }
+        }
+
+        Frame::InputOwner { machine } => {
+            let mine = machine == my_machine;
+            if mine != ownership.owns_input {
+                tracing::info!(
+                    driving = mine,
+                    "this machine is {} driving",
+                    if mine { "now" } else { "no longer" }
+                );
+            }
+            ownership.owns_input = mine;
+            // Whichever way it went, drop anything we were holding: a key held
+            // as control moved would otherwise stay down on one side.
+            let _ = backend.inject.release_all();
+            ownership.apply(backend);
         }
 
         Frame::Ping(token) => connection.send(Frame::Pong(token)).await?,

@@ -24,13 +24,14 @@ use tether_proto::MouseButton;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::ffi::*;
-use super::inject::modifiers_from_flags;
+use super::inject::{modifiers_from_flags, TETHER_EVENT_MARK};
 use super::keycodes::vk_to_hid;
 use crate::traits::{InputCapture, LocalEvent, PlatformError, Result};
 
 struct CaptureShared {
     sink: Mutex<Option<UnboundedSender<LocalEvent>>>,
     swallow: AtomicBool,
+    injected: std::sync::atomic::AtomicU64,
     tap: AtomicPtr<c_void>,
     runloop: AtomicPtr<c_void>,
 }
@@ -60,6 +61,7 @@ impl MacCapture {
             shared: Arc::new(CaptureShared {
                 sink: Mutex::new(None),
                 swallow: AtomicBool::new(false),
+                injected: std::sync::atomic::AtomicU64::new(0),
                 tap: AtomicPtr::new(ptr::null_mut()),
                 runloop: AtomicPtr::new(ptr::null_mut()),
             }),
@@ -121,6 +123,10 @@ impl InputCapture for MacCapture {
 
     fn set_swallow(&self, swallow: bool) {
         self.shared.swallow.store(swallow, Ordering::SeqCst);
+    }
+
+    fn injected_filtered(&self) -> u64 {
+        self.shared.injected.load(Ordering::Relaxed)
     }
 }
 
@@ -213,6 +219,14 @@ extern "C" fn tap_callback(
             tracing::warn!("event tap was disabled by the system; re-enabling");
             unsafe { CGEventTapEnable(tap, true) };
         }
+        return event;
+    }
+
+    // Our own injection? Let it through to the OS untouched, but do not report
+    // it as user input. This is what stops a remotely-driven machine from
+    // seeing the incoming events as a local touch and claiming control back.
+    if unsafe { CGEventGetIntegerValueField(event, kCGEventSourceUserData) } == TETHER_EVENT_MARK {
+        shared.injected.fetch_add(1, Ordering::Relaxed);
         return event;
     }
 

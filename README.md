@@ -128,10 +128,80 @@ without it — from then on only those exact machines are accepted.
 
 | | |
 |---|---|
+| `tether layout` | show the screen arrangement and which way each machine lies |
+| `tether layout <a> left <b>` | put machine `a` to the left of `b` (also `right`, `above`, `below`) |
+| `tether name <new>` | rename this machine |
+| `tether doctor` | check permissions, capture, injection, and the handoff guard |
 | `tether screens` | this machine's displays, as the layout engine sees them |
 | `tether discover` | hosts advertising on this network |
 | `tether id` | this machine's identity and pairing fingerprint |
 | `tether config` | config file path and contents |
+
+## Arranging your screens
+
+Connect the machines once — each is added to the canvas automatically, to the
+right of everything already there — then say where they really sit:
+
+```sh
+tether layout                    # what it thinks right now
+tether layout pc left mac        # the PC is to the left of the Mac
+```
+
+```
+MACHINE            ID                     POSITION
+pc                 4293ca21    -1920,0       1920x1080    Windows
+mac                fce7211d        0,0       1920x1080    macOS  <- this machine
+
+move left     to reach pc
+```
+
+Machines are named by hostname and addressed by name, or by an id prefix when
+two share one. Placement is flush by design: a gap between screens would be
+canvas that belongs to no monitor, and the pointer would stop dead in it
+instead of crossing.
+
+## Following whichever keyboard you touch
+
+By default, control moves to the machine you physically touch. Put a hand on
+the Mac's trackpad and the Mac drives; touch the PC's mouse and the PC drives.
+No hotkey, no switching.
+
+The thing that makes this work is telling *injected* input apart from real
+input. Without it, the moment the PC injects a mouse move into the Mac, the
+Mac's event tap sees "input!" and grabs control straight back — the two ends
+fight forever. macOS solves it by stamping `kCGEventSourceUserData` on every
+synthesised event and ignoring stamped events in the tap; Windows exposes
+`LLMHF_INJECTED` directly.
+
+Check it on your machine before relying on it:
+
+```sh
+tether doctor
+```
+
+```
+Platform            macOS
+Input permission    granted
+Displays            1 found
+Input capture       started
+Injection marking   working (5 of our own events filtered)
+
+Automatic input handoff is safe to use on this machine.
+```
+
+Two deliberate properties:
+
+- **A machine only suppresses its own input while it is the one driving** and
+  the pointer is elsewhere. Any other time your keyboard reaches your own apps
+  — which is what lets you take control back by touching it, and what stops a
+  dropped connection leaving a machine unusable.
+- **The machine being touched moves its own cursor natively.** Nothing is
+  injected into it, so there is no round trip in the common case, and the link
+  going down cannot freeze your pointer.
+
+Turn it off with `auto_input_handoff: false` in the config; `cursor_follows_input`
+controls whether the pointer jumps to the machine you touch or stays put and is
+driven from afar.
 
 ## How it works
 
@@ -184,13 +254,15 @@ Unimplemented backends fail at startup with the name of the API they need,
 rather than appearing to work. `crates/platform/src/windows.rs` and
 `linux.rs` carry the notes for building them.
 
-Done: edge switching, multi-monitor, cursor lock, jump-to-machine hotkeys,
-modifier remapping, clipboard text and images, mDNS discovery with manual
-fallback, TLS with pinning, config persistence, graceful reconnect.
+Done: edge switching, multi-monitor, relative screen arrangement from the CLI,
+automatic input handoff to whichever keyboard you touch, cursor lock,
+jump-to-machine hotkeys, modifier remapping, clipboard text and images, mDNS
+discovery with manual fallback, TLS with pinning, config persistence, graceful
+reconnect.
 
 Not done yet: file transfer (frames exist, offers are refused), the drag-and-drop
-arrangement UI (the menu bar app can start and stop the daemon, but not yet
-position screens), rich-text clipboard (degrades to plain text), lazy clipboard
+arrangement UI (arranging is `tether layout` for now; the menu bar app can start
+and stop the daemon but not position screens), rich-text clipboard (degrades to plain text), lazy clipboard
 pull, live re-layout when a client's resolution changes, hotkey suppression
 while the cursor is on the host, and Windows/Linux service packaging.
 

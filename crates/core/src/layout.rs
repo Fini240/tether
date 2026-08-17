@@ -71,6 +71,59 @@ pub struct Located {
     pub local: Point,
 }
 
+/// Where to put one machine relative to another on the canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Left,
+    Right,
+    Above,
+    Below,
+}
+
+impl Side {
+    pub fn opposite(self) -> Side {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+            Side::Above => Side::Below,
+            Side::Below => Side::Above,
+        }
+    }
+}
+
+impl std::str::FromStr for Side {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Side, String> {
+        match s
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', '_'], "")
+            .as_str()
+        {
+            "left" | "leftof" | "westof" | "west" => Ok(Side::Left),
+            "right" | "rightof" | "eastof" | "east" => Ok(Side::Right),
+            "above" | "up" | "top" | "northof" | "north" => Ok(Side::Above),
+            "below" | "down" | "bottom" | "under" | "southof" | "south" => Ok(Side::Below),
+            other => Err(format!(
+                "unknown side {other:?} — use left, right, above or below"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for Side {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Side::Left => "left of",
+            Side::Right => "right of",
+            Side::Above => "above",
+            Side::Below => "below",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     pub machines: Vec<Placement>,
@@ -148,6 +201,96 @@ impl Layout {
             rect.x + rect.width / 2,
             rect.y + rect.height / 2,
         ))
+    }
+
+    /// Move `machine` so it sits flush against `anchor` on the given side,
+    /// centred on the shared edge.
+    ///
+    /// Flush, with no gap: a gap would be a band of canvas that belongs to no
+    /// monitor, and dragging the pointer into it would stop the cursor dead
+    /// instead of crossing.
+    pub fn place_relative(
+        &mut self,
+        machine: MachineId,
+        side: Side,
+        anchor: MachineId,
+    ) -> Result<(), String> {
+        if machine == anchor {
+            return Err("a machine cannot be placed relative to itself".into());
+        }
+
+        let anchor_rect = self
+            .get(anchor)
+            .ok_or_else(|| format!("machine {anchor} is not on the canvas"))?
+            .global_bounds();
+        let placement = self
+            .get(machine)
+            .ok_or_else(|| format!("machine {machine} is not on the canvas"))?;
+
+        let local = placement.local_bounds();
+        if local.width == 0 || local.height == 0 {
+            return Err(format!("machine {machine} reports no displays"));
+        }
+
+        // Target position of the machine's *bounding box*, then back out the
+        // origin that puts it there.
+        let (x, y) = match side {
+            Side::Left => (
+                anchor_rect.left() - local.width,
+                anchor_rect.top() + (anchor_rect.height - local.height) / 2,
+            ),
+            Side::Right => (
+                anchor_rect.right(),
+                anchor_rect.top() + (anchor_rect.height - local.height) / 2,
+            ),
+            Side::Above => (
+                anchor_rect.left() + (anchor_rect.width - local.width) / 2,
+                anchor_rect.top() - local.height,
+            ),
+            Side::Below => (
+                anchor_rect.left() + (anchor_rect.width - local.width) / 2,
+                anchor_rect.bottom(),
+            ),
+        };
+
+        let placement = self.get_mut(machine).expect("checked above");
+        placement.origin = Point::new(x - local.x, y - local.y);
+        Ok(())
+    }
+
+    /// Find a machine by name (case-insensitive) or by the start of its id.
+    ///
+    /// Names are what a person actually types; ids are what survives a rename.
+    /// An ambiguous prefix is an error rather than a guess — silently picking
+    /// one of two machines would move the wrong screen.
+    pub fn resolve(&self, needle: &str) -> Result<MachineId, String> {
+        let needle_lower = needle.to_ascii_lowercase();
+
+        let by_name: Vec<_> = self
+            .machines
+            .iter()
+            .filter(|p| p.name.to_ascii_lowercase() == needle_lower)
+            .collect();
+        if by_name.len() == 1 {
+            return Ok(by_name[0].machine);
+        }
+        if by_name.len() > 1 {
+            return Err(format!(
+                "{needle:?} matches {} machines; use the id instead",
+                by_name.len()
+            ));
+        }
+
+        let by_id: Vec<_> = self
+            .machines
+            .iter()
+            .filter(|p| p.machine.to_string().starts_with(&needle_lower))
+            .collect();
+        match by_id.len() {
+            1 => Ok(by_id[0].machine),
+            0 => Err(format!("no machine matches {needle:?}")),
+            n => Err(format!("{needle:?} matches {n} machines; be more specific")),
+        }
     }
 
     /// Place a newly discovered machine immediately to the right of everything
@@ -257,6 +400,112 @@ mod tests {
         // Machine 2 is short and vertically centred, so the canvas has empty
         // bands above and below it.
         assert!(layout.locate(Point::new(2000, 5)).is_none());
+    }
+
+    #[test]
+    fn place_relative_puts_a_machine_on_the_left() {
+        let mut layout = Layout::new();
+        layout.auto_place(machine(1, vec![monitor(0, 0, 0, 1920, 1080)]));
+        layout.auto_place(machine(2, vec![monitor(0, 0, 0, 1280, 1024)]));
+
+        layout
+            .place_relative(MachineId(2), Side::Left, MachineId(1))
+            .unwrap();
+
+        let two = layout.get(MachineId(2)).unwrap().global_bounds();
+        let one = layout.get(MachineId(1)).unwrap().global_bounds();
+        assert_eq!(
+            two.right(),
+            one.left(),
+            "must be flush, or the cursor sticks"
+        );
+        // Vertically centred against the anchor.
+        assert_eq!(two.top(), one.top() + (one.height - two.height) / 2);
+    }
+
+    #[test]
+    fn place_relative_survives_a_round_trip() {
+        let mut layout = Layout::new();
+        layout.auto_place(machine(1, vec![monitor(0, 0, 0, 1920, 1080)]));
+        layout.auto_place(machine(2, vec![monitor(0, 0, 0, 1280, 1024)]));
+
+        let start = layout.get(MachineId(2)).unwrap().origin;
+        layout
+            .place_relative(MachineId(2), Side::Left, MachineId(1))
+            .unwrap();
+        layout
+            .place_relative(MachineId(2), Side::Right, MachineId(1))
+            .unwrap();
+        assert_eq!(layout.get(MachineId(2)).unwrap().origin, start);
+    }
+
+    #[test]
+    fn place_relative_stacks_vertically() {
+        let mut layout = Layout::new();
+        layout.auto_place(machine(1, vec![monitor(0, 0, 0, 1920, 1080)]));
+        layout.auto_place(machine(2, vec![monitor(0, 0, 0, 1280, 1024)]));
+
+        layout
+            .place_relative(MachineId(2), Side::Above, MachineId(1))
+            .unwrap();
+        let two = layout.get(MachineId(2)).unwrap().global_bounds();
+        let one = layout.get(MachineId(1)).unwrap().global_bounds();
+        assert_eq!(two.bottom(), one.top());
+        assert_eq!(two.left(), one.left() + (one.width - two.width) / 2);
+    }
+
+    #[test]
+    fn a_machine_placed_left_is_reachable_by_moving_left() {
+        // The point of the whole feature: after placing it left, walking the
+        // cursor left must actually land there.
+        use crate::transition::{CursorRouter, Transition};
+
+        let mut layout = Layout::new();
+        layout.auto_place(machine(1, vec![monitor(0, 0, 0, 1920, 1080)]));
+        layout.auto_place(machine(2, vec![monitor(0, 0, 0, 1280, 1024)]));
+        layout
+            .place_relative(MachineId(2), Side::Left, MachineId(1))
+            .unwrap();
+
+        let mut router = CursorRouter::new(layout, MachineId(1));
+        match router.move_by(-1000, 0) {
+            Transition::Switch { to, .. } => assert_eq!(to.machine, MachineId(2)),
+            other => panic!("expected to cross left, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn place_relative_rejects_nonsense() {
+        let mut layout = Layout::new();
+        layout.auto_place(machine(1, vec![monitor(0, 0, 0, 1920, 1080)]));
+        assert!(layout
+            .place_relative(MachineId(1), Side::Left, MachineId(1))
+            .is_err());
+        assert!(layout
+            .place_relative(MachineId(1), Side::Left, MachineId(9))
+            .is_err());
+    }
+
+    #[test]
+    fn resolve_matches_names_and_id_prefixes() {
+        let mut layout = Layout::new();
+        layout.auto_place(machine(0xABCDEF, vec![monitor(0, 0, 0, 800, 600)]));
+        assert_eq!(layout.resolve("m11259375").unwrap(), MachineId(0xABCDEF));
+        assert!(
+            layout.resolve("M11259375").is_ok(),
+            "names are case-insensitive"
+        );
+        assert!(layout.resolve("0000000000abcdef").is_ok(), "id prefix");
+        assert!(layout.resolve("nope").is_err());
+    }
+
+    #[test]
+    fn sides_parse_from_the_words_people_type() {
+        use std::str::FromStr;
+        assert_eq!(Side::from_str("left").unwrap(), Side::Left);
+        assert_eq!(Side::from_str("left-of").unwrap(), Side::Left);
+        assert_eq!(Side::from_str("ABOVE").unwrap(), Side::Above);
+        assert!(Side::from_str("sideways").is_err());
     }
 
     #[test]

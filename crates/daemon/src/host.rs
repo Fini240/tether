@@ -24,7 +24,7 @@ use tether_net::server::Listener;
 use tether_net::tls::TrustStore;
 use tether_net::Identity;
 use tether_platform::{Backend, BackendKind, LocalEvent};
-use tether_proto::{ClipboardContents, Frame, InputEvent, Platform, Point};
+use tether_proto::{ClipboardContents, Frame, InputEvent, Platform, Point, SourceEvent};
 
 use crate::session;
 
@@ -168,6 +168,9 @@ pub async fn run(
     ));
 
     let mut clients: HashMap<MachineId, Client> = HashMap::new();
+    // Which machine's physical keyboard and mouse are driving. Starts here;
+    // moves to whichever machine the user actually touches.
+    let mut input_owner = identity.machine_id;
     let mut heartbeat = tokio::time::interval(Duration::from_millis(
         config.options.heartbeat_ms.max(250) as u64,
     ));
@@ -180,7 +183,7 @@ pub async fn run(
         tokio::select! {
             biased;
 
-            _ = tokio::signal::ctrl_c() => {
+            _ = session::shutdown_signal() => {
                 tracing::info!("shutting down");
                 break;
             }
@@ -195,6 +198,7 @@ pub async fn run(
                     &mut backend,
                     &options,
                     &trust,
+                    &mut input_owner,
                 )?;
             }
 
@@ -283,9 +287,30 @@ fn handle_event(
     backend: &mut Backend,
     options: &Options,
     trust: &TrustStore,
+    input_owner: &mut MachineId,
 ) -> Result<()> {
     match event {
-        HostEvent::Local(local) => handle_local(local, router, clients, config, backend),
+        HostEvent::Local(local) => {
+            // The host's own keyboard was touched. If somebody else was
+            // driving, take it back — the machine you are physically at wins.
+            if *input_owner != identity.machine_id
+                && config.options.auto_input_handoff
+                && is_deliberate(&local)
+            {
+                set_input_owner(
+                    identity.machine_id,
+                    input_owner,
+                    router,
+                    clients,
+                    config,
+                    backend,
+                );
+            }
+            if *input_owner != identity.machine_id {
+                return Ok(());
+            }
+            handle_local(local, router, clients, config, backend, *input_owner)
+        }
 
         HostEvent::Joined(handle) => {
             let handle = *handle;
@@ -313,9 +338,6 @@ fn handle_event(
                 last_address: Some(handle.address.clone()),
             });
             trust.allow(handle.fingerprint.clone());
-            if let Err(err) = config.save(&options.config_path) {
-                tracing::warn!(%err, "could not persist the new pairing");
-            }
 
             // Put it on the canvas. A saved arrangement wins; a machine seen
             // for the first time is appended to the right of everything else,
@@ -353,6 +375,13 @@ fn handle_event(
             // machine" works without opening a config file.
             assign_switch_hotkey(config, handle.machine);
 
+            // Persist now, not at shutdown. The pairing, the placement on the
+            // canvas and the hotkey are all set — and a daemon that is killed
+            // rather than asked to stop would otherwise lose all three.
+            if let Err(err) = config.save(&options.config_path) {
+                tracing::warn!(%err, "could not persist the new pairing");
+            }
+
             let keymap =
                 config.modifier_map_for(handle.machine, Platform::current(), handle.platform);
             if !keymap.is_identity() {
@@ -374,9 +403,16 @@ fn handle_event(
             Ok(())
         }
 
-        HostEvent::FromClient(machine, frame) => {
-            handle_client_frame(machine, frame, clients, backend, config, identity)
-        }
+        HostEvent::FromClient(machine, frame) => handle_client_frame(
+            machine,
+            frame,
+            clients,
+            backend,
+            config,
+            identity,
+            router,
+            input_owner,
+        ),
 
         HostEvent::Gone(machine) => {
             let gone = clients.remove(&machine);
@@ -400,6 +436,18 @@ fn handle_event(
             if had_cursor {
                 reclaim_cursor(router, backend);
             }
+            // If the machine that vanished was the one driving, take input
+            // back here, or the keyboard on this desk stays dead.
+            if *input_owner == machine {
+                set_input_owner(
+                    identity.machine_id,
+                    input_owner,
+                    router,
+                    clients,
+                    config,
+                    backend,
+                );
+            }
             Ok(())
         }
     }
@@ -415,27 +463,97 @@ fn reclaim_cursor(router: &mut CursorRouter, backend: &mut Backend) {
     tracing::info!("cursor is back on the host");
 }
 
+/// Is this worth taking control for?
+///
+/// A single pixel of mouse drift or a stray scroll should not yank control
+/// away from the machine you are typing on. A keypress, a click, or a real
+/// movement should.
+fn is_deliberate(event: &LocalEvent) -> bool {
+    match event {
+        LocalEvent::Key { pressed, .. } => *pressed,
+        LocalEvent::Button { pressed, .. } => *pressed,
+        LocalEvent::MouseDelta { dx, dy } => dx.abs() + dy.abs() >= 3,
+        LocalEvent::Wheel { dx, dy } => dx.abs() + dy.abs() >= 1.0,
+    }
+}
+
+/// Hand the physical-input role to `next`.
+fn set_input_owner(
+    next: MachineId,
+    input_owner: &mut MachineId,
+    router: &mut CursorRouter,
+    clients: &HashMap<MachineId, Client>,
+    config: &Config,
+    backend: &mut Backend,
+) {
+    if *input_owner == next {
+        return;
+    }
+    let previous = *input_owner;
+    *input_owner = next;
+    tracing::info!(from = %previous, to = %next, "input handed over");
+
+    // Whoever was driving may be holding keys down. Let go of them everywhere
+    // before the new owner starts sending its own.
+    let _ = backend.inject.release_all();
+    broadcast(clients, Frame::ReleaseAll);
+    broadcast(clients, Frame::InputOwner { machine: next.0 });
+
+    if config.options.cursor_follows_input {
+        // Bring the pointer to the machine being touched. Without this,
+        // touching the Mac's trackpad drives a cursor still sitting on the PC,
+        // which feels broken even though it is working exactly as designed.
+        let transition = router.jump_to(next);
+        apply_transition(transition, router, clients, backend, next);
+    }
+
+    update_host_swallow(router, backend, next);
+}
+
+/// The host suppresses its own input only while it is the one driving *and*
+/// the cursor is somewhere else. Any other time, local input must reach local
+/// apps — including so the user can touch this machine to take control back.
+fn update_host_swallow(router: &CursorRouter, backend: &mut Backend, input_owner: MachineId) {
+    let owns = input_owner == router.host();
+    let cursor_here = router.active() == router.host();
+    let swallow = owns && !cursor_here;
+
+    backend.capture.set_swallow(swallow);
+    let _ = backend.pointer.set_visible(!swallow);
+}
+
 fn handle_local(
     local: LocalEvent,
     router: &mut CursorRouter,
     clients: &mut HashMap<MachineId, Client>,
     config: &Config,
     backend: &mut Backend,
+    input_owner: MachineId,
 ) -> Result<()> {
     match local {
         LocalEvent::MouseDelta { dx, dy } => {
             let transition = router.move_by(dx, dy);
-            apply_transition(transition, router, clients, backend);
+            apply_transition(transition, router, clients, backend, input_owner);
             Ok(())
         }
 
         LocalEvent::Button { button, pressed } => {
-            forward_if_remote(router, clients, InputEvent::MouseButton { button, pressed });
+            forward_if_remote(
+                router,
+                clients,
+                InputEvent::MouseButton { button, pressed },
+                input_owner,
+            );
             Ok(())
         }
 
         LocalEvent::Wheel { dx, dy } => {
-            forward_if_remote(router, clients, InputEvent::MouseWheel { dx, dy });
+            forward_if_remote(
+                router,
+                clients,
+                InputEvent::MouseWheel { dx, dy },
+                input_owner,
+            );
             Ok(())
         }
 
@@ -450,7 +568,7 @@ fn handle_local(
                 // are not swallowing, so the chord also reaches the local app.
                 // Fixing it needs a per-event "drop this one" path into the
                 // capture backend rather than the current global switch.
-                run_action(action.clone(), router, clients, backend);
+                run_action(action.clone(), router, clients, backend, input_owner);
                 return Ok(());
             }
 
@@ -463,20 +581,26 @@ fn handle_local(
                     modifiers,
                     repeat,
                 },
+                input_owner,
             );
             Ok(())
         }
     }
 }
 
-/// Send an event to the machine holding the cursor, unless that is the host —
-/// in which case the OS already delivered it, because we are not swallowing.
+/// Send an event to the machine holding the cursor — unless that machine is
+/// the one being physically touched, in which case its own OS already
+/// delivered it and we are not suppressing there.
 fn forward_if_remote(
     router: &CursorRouter,
     clients: &HashMap<MachineId, Client>,
     event: InputEvent,
+    input_owner: MachineId,
 ) {
     let active = router.active();
+    if active == input_owner {
+        return;
+    }
     if active == router.host() {
         return;
     }
@@ -494,13 +618,16 @@ fn apply_transition(
     router: &CursorRouter,
     clients: &HashMap<MachineId, Client>,
     backend: &mut Backend,
+    input_owner: MachineId,
 ) {
     match transition {
         Transition::Blocked => {}
 
         Transition::Stay(located) => {
-            if located.machine == router.host() {
-                // The host's own cursor moved; nothing to do, the OS did it.
+            // The machine being touched moves its own cursor natively — we are
+            // not suppressing there, so injecting would double the motion.
+            // This is also what keeps a machine usable if the link drops.
+            if located.machine == input_owner || located.machine == router.host() {
                 return;
             }
             send_move(clients, located);
@@ -525,9 +652,13 @@ fn apply_transition(
                 let _ = backend.pointer.set_visible(true);
             } else {
                 // Suppress local delivery *before* announcing the switch, so no
-                // stray event lands on the host in between.
-                backend.capture.set_swallow(true);
-                let _ = backend.pointer.set_visible(false);
+                // stray event lands on the host in between. Only if the host is
+                // the one being touched, though: if somebody else is driving,
+                // this machine's own keyboard must stay live so its user can
+                // take control back.
+                let host_is_driving = input_owner == router.host();
+                backend.capture.set_swallow(host_is_driving);
+                let _ = backend.pointer.set_visible(!host_is_driving);
                 if let Some(client) = clients.get(&to.machine) {
                     let _ = client.tx.send(Frame::Enter {
                         monitor: to.monitor,
@@ -554,6 +685,7 @@ fn run_action(
     router: &mut CursorRouter,
     clients: &HashMap<MachineId, Client>,
     backend: &mut Backend,
+    input_owner: MachineId,
 ) {
     match action {
         Action::ToggleLock => {
@@ -572,7 +704,7 @@ fn run_action(
         }
         Action::SwitchTo { machine } => {
             let transition = router.jump_to(machine);
-            apply_transition(transition, router, clients, backend);
+            apply_transition(transition, router, clients, backend, input_owner);
         }
         Action::LockAllScreens => {
             broadcast(clients, Frame::LockScreen);
@@ -587,6 +719,7 @@ fn run_action(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_client_frame(
     machine: MachineId,
     frame: Frame,
@@ -594,8 +727,43 @@ fn handle_client_frame(
     backend: &mut Backend,
     config: &Config,
     identity: &Identity,
+    router: &mut CursorRouter,
+    input_owner: &mut MachineId,
 ) -> Result<()> {
     match frame {
+        Frame::ClaimInput => {
+            if config.options.auto_input_handoff {
+                set_input_owner(machine, input_owner, router, clients, config, backend);
+            } else {
+                tracing::debug!(%machine, "ignoring an input claim; handoff is disabled");
+            }
+        }
+
+        Frame::SourceInput(event) => {
+            // Only from whoever currently holds the role. A late frame from the
+            // previous owner arriving after a handover must not move anything.
+            if *input_owner != machine {
+                return Ok(());
+            }
+            let local = match event {
+                SourceEvent::MouseDelta { dx, dy } => LocalEvent::MouseDelta { dx, dy },
+                SourceEvent::Button { button, pressed } => LocalEvent::Button { button, pressed },
+                SourceEvent::Wheel { dx, dy } => LocalEvent::Wheel { dx, dy },
+                SourceEvent::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    repeat,
+                } => LocalEvent::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    repeat,
+                },
+            };
+            handle_local(local, router, clients, config, backend, *input_owner)?;
+        }
+
         Frame::Ping(token) => {
             if let Some(client) = clients.get(&machine) {
                 let _ = client.tx.send(Frame::Pong(token));

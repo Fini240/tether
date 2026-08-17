@@ -180,6 +180,34 @@ pub enum MouseButton {
     Other(u8),
 }
 
+/// Input as *captured*, before any routing — the form a machine reports when
+/// it is the one being physically touched.
+///
+/// Distinct from [`InputEvent`], which is input as *delivered*: motion here is
+/// a delta from a physical device, whereas a delivered `MouseMove` is an
+/// absolute position the router has already decided on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SourceEvent {
+    MouseDelta {
+        dx: i32,
+        dy: i32,
+    },
+    Button {
+        button: MouseButton,
+        pressed: bool,
+    },
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
+    Key {
+        key: KeyCode,
+        pressed: bool,
+        modifiers: Modifiers,
+        repeat: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputEvent {
     /// Absolute position in the *receiving* machine's local coordinate space.

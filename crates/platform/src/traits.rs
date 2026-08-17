@@ -72,6 +72,17 @@ pub trait InputCapture: Send {
     /// applications. Set when the cursor is on a remote machine — otherwise
     /// every keystroke lands on both machines at once.
     fn set_swallow(&self, swallow: bool);
+
+    /// How many events this backend recognised as its own injections and
+    /// dropped rather than reporting as user input.
+    ///
+    /// Exists because that filter is load-bearing for input handoff: without
+    /// it, a machine being driven remotely sees the injected events as somebody
+    /// touching its keyboard and immediately grabs control back. `tether doctor`
+    /// reads this to prove the filter works before you rely on it.
+    fn injected_filtered(&self) -> u64 {
+        0
+    }
 }
 
 /// Injects input into this machine. Client side (and host, for local replay).

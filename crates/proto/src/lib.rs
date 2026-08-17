@@ -14,7 +14,7 @@ pub mod message;
 pub use clipboard::{ClipFormat, ClipboardContents, ClipboardStamp};
 pub use codec::{Codec, CodecError};
 pub use geometry::{MonitorId, MonitorInfo, Point, Rect};
-pub use input::{InputEvent, KeyCode, Modifiers, MouseButton};
+pub use input::{InputEvent, KeyCode, Modifiers, MouseButton, SourceEvent};
 pub use message::{Frame, Hello, Platform, Welcome};
 
 /// Bumped on any breaking change to the types in this crate. The host refuses

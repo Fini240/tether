@@ -73,6 +73,13 @@ pub struct Options {
     pub edge_resistance: u32,
     /// Milliseconds between heartbeats. Also the reconnect poll interval.
     pub heartbeat_ms: u32,
+    /// Hand control to whichever machine you physically touch. Touch the Mac's
+    /// trackpad and the Mac drives; touch the PC's mouse and the PC drives.
+    pub auto_input_handoff: bool,
+    /// When control moves to another machine, bring the cursor with it.
+    /// Off means the cursor stays where it was and the newly-touched device
+    /// simply drives it from afar.
+    pub cursor_follows_input: bool,
     /// Per-peer modifier overrides, keyed by machine. Absent means use the
     /// platform default from `ModifierMap::between`.
     pub modifier_overrides: Vec<(MachineId, ModifierMap)>,
@@ -89,6 +96,8 @@ impl Default for Options {
             cursor_lock_on_start: false,
             edge_resistance: 0,
             heartbeat_ms: 2_000,
+            auto_input_handoff: true,
+            cursor_follows_input: true,
             modifier_overrides: Vec::new(),
         }
     }
@@ -241,13 +250,37 @@ fn default_hotkeys() -> HotkeyTable {
     table
 }
 
-/// Hostname, falling back to a fixed string. Used as the default display name.
+/// This machine's name, as shown to peers and typed at the CLI.
+///
+/// `HOSTNAME` is set by interactive shells on Linux but is absent on macOS,
+/// and `COMPUTERNAME` only exists on Windows — relying on the environment
+/// alone left every Mac called "tether", so two of them could not be told
+/// apart by name. Fall back to asking the system.
 pub fn default_machine_name() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
+    if let Some(name) = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "tether".to_string())
+    {
+        return short_hostname(&name);
+    }
+
+    if let Ok(output) = std::process::Command::new("hostname").output() {
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !name.is_empty() {
+                return short_hostname(&name);
+            }
+        }
+    }
+
+    "tether".to_string()
+}
+
+/// `Finns-MacBook.local` -> `Finns-MacBook`. The domain part is noise in a
+/// menu and makes the name tedious to type.
+fn short_hostname(raw: &str) -> String {
+    raw.split('.').next().unwrap_or(raw).trim().to_string()
 }
 
 /// Per-user config directory, following each platform's convention.
@@ -322,6 +355,17 @@ mod tests {
             .bindings
             .iter()
             .any(|b| b.action == Action::SwitchTo { machine: id }));
+    }
+
+    #[test]
+    fn the_default_name_drops_the_domain() {
+        assert_eq!(short_hostname("Finns-MacBook.local"), "Finns-MacBook");
+        assert_eq!(short_hostname("desktop"), "desktop");
+    }
+
+    #[test]
+    fn the_default_name_is_never_empty() {
+        assert!(!default_machine_name().is_empty());
     }
 
     #[test]

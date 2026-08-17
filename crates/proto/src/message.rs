@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clipboard::{ClipFormat, ClipboardContents, ClipboardStamp};
 use crate::geometry::MonitorInfo;
-use crate::input::InputEvent;
+use crate::input::{InputEvent, SourceEvent};
 
 /// Which OS a peer runs. Drives the modifier remap and nothing else — no
 /// behaviour should branch on this beyond key translation and lock-screen
@@ -107,6 +107,21 @@ pub enum Frame {
 
     // ---- input ----
     Input(InputEvent),
+
+    // ---- input ownership (which machine is being physically touched) ----
+    /// "Somebody just touched my keyboard or trackpad; I should be driving."
+    ///
+    /// Sent by a client that detects genuine local input while another machine
+    /// owns it. The host arbitrates — a client never assumes it won.
+    ClaimInput,
+    /// The host's ruling on who is driving. Broadcast to everyone, so the
+    /// machine that just lost input knows to stop suppressing its own.
+    InputOwner {
+        machine: u64,
+    },
+    /// Raw captured input from whichever machine currently owns it. The host
+    /// feeds this through the same router as its own capture.
+    SourceInput(SourceEvent),
 
     // ---- clipboard ----
     /// "My clipboard changed; here is what I have." No bytes yet.
