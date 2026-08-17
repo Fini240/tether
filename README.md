@@ -1,0 +1,152 @@
+# Tether
+
+Share one keyboard and mouse across several computers on a LAN — a software
+KVM. No extra hardware, no cloud, and no screen streaming: only input,
+clipboard and file events cross the wire.
+
+**Status: walking skeleton.** The end-to-end path works — pairing, TLS,
+automatic layout, edge-based cursor switching, keyboard and mouse forwarding,
+cross-platform modifier remapping, clipboard sync. Windows and Linux backends,
+file transfer, and the arrangement UI are stubbed behind real interfaces. See
+[Implementation status](#implementation-status) for exactly what is and is not
+done.
+
+## Quick start
+
+Needs Rust 1.82+.
+
+```sh
+cargo build --release
+```
+
+Try it without a second computer — a host and a client in one terminal each,
+both on synthetic screens:
+
+```sh
+# terminal 1
+./target/release/tether --config /tmp/a/config.json --backend headless \
+    host --pair --port 24800
+
+# terminal 2
+./target/release/tether --config /tmp/b/config.json --backend headless \
+    client --pair --host 127.0.0.1:24800
+```
+
+Each prints a pairing fingerprint; they should match what the other reports.
+
+On real machines, drop `--backend headless` and let discovery find the host:
+
+```sh
+tether host --pair          # the machine with the keyboard and mouse
+tether client --pair        # every other machine
+```
+
+Run both once with `--pair`, confirm the fingerprints match, then restart
+without it — from then on only those exact machines are accepted.
+
+### Other commands
+
+| | |
+|---|---|
+| `tether screens` | this machine's displays, as the layout engine sees them |
+| `tether discover` | hosts advertising on this network |
+| `tether id` | this machine's identity and pairing fingerprint |
+| `tether config` | config file path and contents |
+
+## How it works
+
+One machine is the **host**: it owns the physical keyboard and mouse. Every
+other machine runs a client that injects what it is told.
+
+Every monitor of every machine is placed on one **virtual canvas**. The host
+keeps a single authoritative cursor position on that canvas and moves it by the
+deltas it captures. Whichever monitor contains the resulting point decides who
+receives the event — so crossing a screen edge is just a lookup, and a machine
+with three displays is simply three rectangles. Clients never do layout maths;
+they are handed absolute coordinates in their own space.
+
+While a client holds the cursor, the host **suppresses** input locally, so
+keystrokes do not land on both machines at once.
+
+Keys travel as USB HID usage codes — physical key positions, not characters —
+so the receiving machine's own keyboard layout applies. Crossing between macOS
+and anything else swaps Control and Meta, which is what makes ⌘C work as Ctrl+C
+and back again.
+
+## Security
+
+There is no certificate authority on a LAN, so trust is **fingerprint pinning**,
+like SSH's `known_hosts`:
+
+- Each machine generates a self-signed certificate once. Its SHA-256
+  fingerprint is its identity.
+- `--pair` accepts an unknown fingerprint once and records it. Both ends print
+  it so you can compare.
+- Afterwards only recorded fingerprints are accepted, in both directions.
+
+All traffic is TLS 1.2/1.3 (rustls, `ring` provider). Both ends authenticate —
+this connection carries every keystroke you type, including passwords, so
+one-sided authentication would not be enough. The pairing window is the weak
+point: someone on your network during it could interpose. Compare the
+fingerprints.
+
+## Implementation status
+
+| | capture | inject | monitors | clipboard | lock |
+|---|---|---|---|---|---|
+| macOS | ✅ CGEventTap | ✅ CGEvent | ✅ | ✅ | ✅ |
+| Windows | ⛔ | ⛔ | ⛔ | ✅ | ⛔ |
+| Linux / X11 | ⛔ | ⛔ | ⛔ | ✅ | ⛔ |
+| Linux / Wayland | ⛔ | ⛔ | ⛔ | ✅ | ⛔ |
+| headless | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Unimplemented backends fail at startup with the name of the API they need,
+rather than appearing to work. `crates/platform/src/windows.rs` and
+`linux.rs` carry the notes for building them.
+
+Done: edge switching, multi-monitor, cursor lock, jump-to-machine hotkeys,
+modifier remapping, clipboard text and images, mDNS discovery with manual
+fallback, TLS with pinning, config persistence, graceful reconnect.
+
+Not done yet: file transfer (frames exist, offers are refused), the arrangement
+UI, rich-text clipboard (degrades to plain text), lazy clipboard pull, live
+re-layout when a client's resolution changes, hotkey suppression while the
+cursor is on the host, tray app and service packaging.
+
+### Verification
+
+`cargo test` covers the geometry, keymap, codec, TLS and discovery units, plus
+an end-to-end test that runs a host and a client in one process over a real TLS
+socket and asserts that the cursor crosses, coordinates translate into the
+client's space, and keystrokes arrive.
+
+The macOS event tap and display enumeration are **not** exercised by that
+suite — they need a logged-in graphical session. They are written but unproven;
+run `tether screens` on a real desktop session as the first check.
+
+## Layout of the source
+
+| crate | what lives there |
+|---|---|
+| `tether-proto` | wire types and framing — everything that crosses the network |
+| `tether-core` | canvas, cursor router, keymap, hotkeys, config. No OS, no network |
+| `tether-platform` | the OS boundary: capture, injection, monitors, clipboard |
+| `tether-net` | TLS with pinning, identity, mDNS |
+| `tether-daemon` | the `tether` binary: host and client session loops |
+
+The interesting logic is in `tether-core::transition` and it is entirely
+unit-testable without a second computer, which is the point of keeping it there.
+
+## macOS permissions
+
+Both roles need **Accessibility** (System Settings → Privacy & Security), and
+some versions also prompt for **Input Monitoring**. The grant is tied to the
+binary's code signature, so an unsigned rebuild invalidates it and it must be
+removed and re-added. Sign with a stable identity to avoid that.
+
+Injection fails *silently* without the grant, which is why both roles check at
+startup rather than letting you conclude the network is broken.
+
+## Licence
+
+MIT OR Apache-2.0.

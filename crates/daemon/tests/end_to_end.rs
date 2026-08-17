@@ -1,0 +1,282 @@
+//! End-to-end: a host and a client in one process, talking over a real TLS
+//! socket, with headless backends standing in for the operating system.
+//!
+//! This is the test that says the walking skeleton walks. It covers the whole
+//! path — pairing, the TLS handshake, layout placement, edge detection,
+//! coordinate translation, frame encoding — by asserting on what the *client's*
+//! backend was told to inject. A unit test of the router could not catch a
+//! coordinate space confused somewhere between the two.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use tether_core::config::Config;
+use tether_daemon::{clientmode, host};
+use tether_net::Identity;
+use tether_platform::headless::{backend_with, fake_monitor, HeadlessHandle};
+use tether_platform::LocalEvent;
+use tether_proto::{InputEvent, KeyCode, Modifiers, MouseButton};
+
+const HOST_WIDTH: i32 = 1920;
+const HOST_HEIGHT: i32 = 1080;
+const CLIENT_WIDTH: i32 = 1280;
+const CLIENT_HEIGHT: i32 = 1024;
+
+struct Harness {
+    host_input: HeadlessHandle,
+    client_output: HeadlessHandle,
+    _dir: TempDir,
+}
+
+/// Removes itself on drop so a failing test does not litter /tmp.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> TempDir {
+        let path = std::env::temp_dir().join(format!(
+            "tether-e2e-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("could not create the temp dir");
+        TempDir(path)
+    }
+
+    fn join(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Start a host and one client, both headless, and wait until they are joined.
+async fn start(tag: &str) -> Harness {
+    let dir = TempDir::new(tag);
+
+    let (host_backend, host_input) = backend_with(vec![fake_monitor(
+        0,
+        0,
+        0,
+        HOST_WIDTH,
+        HOST_HEIGHT,
+        true,
+    )]);
+    let (client_backend, client_output) = backend_with(vec![fake_monitor(
+        0,
+        0,
+        0,
+        CLIENT_WIDTH,
+        CLIENT_HEIGHT,
+        true,
+    )]);
+
+    let host_identity = Identity::generate().expect("host identity");
+    let client_identity = Identity::generate().expect("client identity");
+
+    let host_config = Config {
+        name: "test-host".into(),
+        ..Config::default()
+    };
+    let client_config = Config {
+        name: "test-client".into(),
+        ..Config::default()
+    };
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(host::run(
+        host::Options {
+            // Port 0: the OS picks a free one and `ready` reports it back, so
+            // concurrent test runs cannot collide on a fixed port.
+            bind: "127.0.0.1:0".into(),
+            pairing: true,
+            config_path: dir.join("host-config.json"),
+            advertise: false,
+            ready: Some(ready_tx),
+        },
+        host_config,
+        host_identity,
+        host_backend,
+    ));
+
+    let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("host did not start listening in time")
+        .expect("host dropped the ready channel");
+
+    tokio::spawn(clientmode::run(
+        clientmode::Options {
+            address: Some(addr.to_string()),
+            pairing: true,
+            config_path: dir.join("client-config.json"),
+        },
+        client_config,
+        client_identity,
+        client_backend,
+    ));
+
+    Harness {
+        host_input,
+        client_output,
+        _dir: dir,
+    }
+}
+
+/// Push the pointer off the host's right edge, then nudge it once more inside
+/// the client.
+///
+/// Two details this encodes:
+///
+/// * The join is asynchronous, so early nudges land while no client exists yet.
+///   A delta that lands in empty canvas is refused and the position is
+///   unchanged, so retrying is safe and makes the test deterministic without
+///   sleeping on a guess.
+/// * Crossing itself injects nothing — the host sends `Enter`, which *warps*
+///   the client's cursor rather than synthesising motion. Swallowing on the
+///   host is the real crossing signal; the follow-up nudge is what produces
+///   the first `MouseMove`.
+async fn cross_to_client(harness: &Harness) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        harness.host_input.emit(LocalEvent::MouseDelta {
+            dx: HOST_WIDTH,
+            dy: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        if harness.host_input.is_swallowing() {
+            harness
+                .host_input
+                .emit(LocalEvent::MouseDelta { dx: 10, dy: 10 });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            return;
+        }
+    }
+    panic!("the cursor never crossed onto the client");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cursor_crosses_the_edge_onto_a_client() {
+    let harness = start("cursor").await;
+    cross_to_client(&harness).await;
+
+    let injected = harness.client_output.injected();
+    let first_move = injected
+        .iter()
+        .find_map(|event| match event {
+            InputEvent::MouseMove { x, y } => Some((*x, *y)),
+            _ => None,
+        })
+        .expect("the client received no pointer motion");
+
+    // The client's own coordinate space, not the shared canvas — the host is
+    // 1920 wide and the client's origin sits at global x=1920, so anything
+    // near or above 1920 here would mean the translation never happened.
+    assert!(
+        first_move.0 >= 0 && first_move.0 < CLIENT_WIDTH,
+        "x {} is outside the client's 0..{CLIENT_WIDTH} space",
+        first_move.0
+    );
+    assert!(
+        first_move.1 >= 0 && first_move.1 < CLIENT_HEIGHT,
+        "y {} is outside the client's 0..{CLIENT_HEIGHT} space",
+        first_move.1
+    );
+
+    // The host must stop delivering input locally while the client owns it.
+    assert!(
+        harness.host_input.is_swallowing(),
+        "the host is still delivering input to itself"
+    );
+    assert!(
+        !harness.host_input.cursor_visible(),
+        "the host's cursor should be hidden while a client has it"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keystrokes_reach_the_client_that_holds_the_cursor() {
+    let harness = start("keys").await;
+    cross_to_client(&harness).await;
+    harness.client_output.clear_injected();
+
+    harness.host_input.emit(LocalEvent::Key {
+        key: KeyCode::C,
+        pressed: true,
+        modifiers: Modifiers::META,
+        repeat: false,
+    });
+    harness.host_input.emit(LocalEvent::Button {
+        button: MouseButton::Left,
+        pressed: true,
+    });
+
+    let injected = wait_for(&harness.client_output, 2).await;
+
+    assert!(
+        injected.iter().any(|event| matches!(
+            event,
+            InputEvent::Key {
+                key: KeyCode::C,
+                pressed: true,
+                ..
+            }
+        )),
+        "the client never got the key press: {injected:?}"
+    );
+    assert!(
+        injected.iter().any(|event| matches!(
+            event,
+            InputEvent::MouseButton {
+                button: MouseButton::Left,
+                pressed: true
+            }
+        )),
+        "the client never got the click: {injected:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cursor_comes_back_to_the_host() {
+    let harness = start("return").await;
+    cross_to_client(&harness).await;
+    harness.client_output.clear_injected();
+
+    // Walk back left across the boundary.
+    for _ in 0..4 {
+        harness.host_input.emit(LocalEvent::MouseDelta {
+            dx: -CLIENT_WIDTH,
+            dy: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if !harness.host_input.is_swallowing() {
+            break;
+        }
+    }
+
+    assert!(
+        !harness.host_input.is_swallowing(),
+        "the host is still swallowing input after the cursor returned"
+    );
+    assert!(
+        harness.host_input.cursor_visible(),
+        "the host's cursor should be visible again"
+    );
+}
+
+/// Poll until at least `count` events have been injected, or time out.
+async fn wait_for(handle: &HeadlessHandle, count: usize) -> Vec<InputEvent> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let injected = handle.injected();
+        if injected.len() >= count || tokio::time::Instant::now() > deadline {
+            return injected;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

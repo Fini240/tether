@@ -1,0 +1,28 @@
+[package]
+name = "tether-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tether-proto.workspace = true
+tether-core.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
+
+mdns-sd = "0.11"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

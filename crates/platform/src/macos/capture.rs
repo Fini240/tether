@@ -1,0 +1,313 @@
+//! Capturing the physical keyboard and mouse with a CGEventTap.
+//!
+//! The tap is created at `kCGHIDEventTap` with `kCGEventTapOptionDefault`,
+//! which is the only combination that can both see every event and *suppress*
+//! it — returning NULL from the callback drops the event. Suppression is what
+//! stops keystrokes landing on the host while the cursor is on a client.
+//!
+//! A tap requires an active CFRunLoop, and CFRunLoopRun never returns, so it
+//! lives on its own thread. Nothing about it is async.
+
+// The CGEvent* constants keep Apple's C names. They contain uppercase letters,
+// so they resolve as constants in patterns rather than as catch-all bindings —
+// the lint is about the naming convention, not about the match arms silently
+// swallowing every event.
+#![allow(non_upper_case_globals)]
+
+use std::ffi::c_void;
+use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
+use tether_proto::MouseButton;
+use tokio::sync::mpsc::UnboundedSender;
+
+use super::ffi::*;
+use super::inject::modifiers_from_flags;
+use super::keycodes::vk_to_hid;
+use crate::traits::{InputCapture, LocalEvent, PlatformError, Result};
+
+struct CaptureShared {
+    sink: Mutex<Option<UnboundedSender<LocalEvent>>>,
+    swallow: AtomicBool,
+    tap: AtomicPtr<c_void>,
+    runloop: AtomicPtr<c_void>,
+}
+
+impl CaptureShared {
+    fn emit(&self, event: LocalEvent) {
+        let guard = match self.sink.lock() {
+            Ok(g) => g,
+            // A poisoned lock here would mean losing every subsequent event;
+            // there is nothing useful to do but carry on without emitting.
+            Err(_) => return,
+        };
+        if let Some(sink) = guard.as_ref() {
+            let _ = sink.send(event);
+        }
+    }
+}
+
+pub struct MacCapture {
+    shared: Arc<CaptureShared>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl MacCapture {
+    pub fn new() -> Self {
+        Self {
+            shared: Arc::new(CaptureShared {
+                sink: Mutex::new(None),
+                swallow: AtomicBool::new(false),
+                tap: AtomicPtr::new(ptr::null_mut()),
+                runloop: AtomicPtr::new(ptr::null_mut()),
+            }),
+            thread: None,
+        }
+    }
+}
+
+impl Default for MacCapture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InputCapture for MacCapture {
+    fn start(&mut self, sink: UnboundedSender<LocalEvent>) -> Result<()> {
+        if self.thread.is_some() {
+            return Ok(());
+        }
+        *self
+            .shared
+            .sink
+            .lock()
+            .map_err(|_| PlatformError::backend("capture sink poisoned"))? = Some(sink);
+
+        let shared = Arc::clone(&self.shared);
+        // The tap either installs immediately or not at all, so the thread
+        // reports back once and we surface a real error instead of silently
+        // running with a dead tap.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
+
+        let handle = std::thread::Builder::new()
+            .name("tether-eventtap".into())
+            .spawn(move || run_tap(shared, ready_tx))
+            .map_err(|e| PlatformError::backend(format!("could not spawn tap thread: {e}")))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {
+                self.thread = Some(handle);
+                Ok(())
+            }
+            Ok(Err(message)) => Err(PlatformError::PermissionDenied(message)),
+            Err(_) => Err(PlatformError::backend("tap thread exited during startup")),
+        }
+    }
+
+    fn stop(&mut self) {
+        let runloop = self.shared.runloop.swap(ptr::null_mut(), Ordering::SeqCst);
+        if !runloop.is_null() {
+            unsafe { CFRunLoopStop(runloop) };
+        }
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+        if let Ok(mut sink) = self.shared.sink.lock() {
+            *sink = None;
+        }
+    }
+
+    fn set_swallow(&self, swallow: bool) {
+        self.shared.swallow.store(swallow, Ordering::SeqCst);
+    }
+}
+
+impl Drop for MacCapture {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn run_tap(shared: Arc<CaptureShared>, ready: std::sync::mpsc::Sender<std::result::Result<(), String>>) {
+    let mask = event_mask(kCGEventMouseMoved)
+        | event_mask(kCGEventLeftMouseDown)
+        | event_mask(kCGEventLeftMouseUp)
+        | event_mask(kCGEventRightMouseDown)
+        | event_mask(kCGEventRightMouseUp)
+        | event_mask(kCGEventOtherMouseDown)
+        | event_mask(kCGEventOtherMouseUp)
+        | event_mask(kCGEventLeftMouseDragged)
+        | event_mask(kCGEventRightMouseDragged)
+        | event_mask(kCGEventOtherMouseDragged)
+        | event_mask(kCGEventScrollWheel)
+        | event_mask(kCGEventKeyDown)
+        | event_mask(kCGEventKeyUp)
+        | event_mask(kCGEventFlagsChanged);
+
+    // The callback borrows this for the lifetime of the run loop. Ownership
+    // comes back at the end of the function, after CFRunLoopRun returns.
+    let user_info = Arc::into_raw(Arc::clone(&shared)) as *mut c_void;
+
+    unsafe {
+        let tap = CGEventTapCreate(
+            kCGHIDEventTap,
+            kCGHeadInsertEventTap,
+            kCGEventTapOptionDefault,
+            mask,
+            tap_callback,
+            user_info,
+        );
+
+        if tap.is_null() {
+            drop(Arc::from_raw(user_info as *const CaptureShared));
+            let _ = ready.send(Err(
+                "macOS refused the event tap. Grant this binary Accessibility \
+                 access in System Settings → Privacy & Security → Accessibility, \
+                 then start it again."
+                    .to_string(),
+            ));
+            return;
+        }
+
+        let source = CFMachPortCreateRunLoopSource(ptr::null(), tap, 0);
+        let runloop = CFRunLoopGetCurrent();
+        shared.tap.store(tap, Ordering::SeqCst);
+        shared.runloop.store(runloop, Ordering::SeqCst);
+
+        CFRunLoopAddSource(runloop, source, kCFRunLoopCommonModes);
+        CGEventTapEnable(tap, true);
+        let _ = ready.send(Ok(()));
+
+        CFRunLoopRun();
+
+        CGEventTapEnable(tap, false);
+        CFRelease(source);
+        CFRelease(tap);
+        shared.tap.store(ptr::null_mut(), Ordering::SeqCst);
+        drop(Arc::from_raw(user_info as *const CaptureShared));
+    }
+}
+
+extern "C" fn tap_callback(
+    _proxy: *mut c_void,
+    event_type: u32,
+    event: CGEventRef,
+    user_info: *mut c_void,
+) -> CGEventRef {
+    if user_info.is_null() {
+        return event;
+    }
+    // Borrowed, not owned — `run_tap` holds the only strong reference.
+    let shared = unsafe { &*(user_info as *const CaptureShared) };
+
+    // macOS disables a tap whose callback ran long. Re-arm it rather than
+    // going quietly deaf.
+    if event_type == kCGEventTapDisabledByTimeout
+        || event_type == kCGEventTapDisabledByUserInput
+    {
+        let tap = shared.tap.load(Ordering::SeqCst);
+        if !tap.is_null() {
+            tracing::warn!("event tap was disabled by the system; re-enabling");
+            unsafe { CGEventTapEnable(tap, true) };
+        }
+        return event;
+    }
+
+    let flags = unsafe { CGEventGetFlags(event) };
+    let modifiers = modifiers_from_flags(flags);
+
+    let local = match event_type {
+        kCGEventMouseMoved
+        | kCGEventLeftMouseDragged
+        | kCGEventRightMouseDragged
+        | kCGEventOtherMouseDragged => {
+            let dx = unsafe { CGEventGetIntegerValueField(event, kCGMouseEventDeltaX) } as i32;
+            let dy = unsafe { CGEventGetIntegerValueField(event, kCGMouseEventDeltaY) } as i32;
+            if dx == 0 && dy == 0 {
+                return pass_through(shared, event);
+            }
+            Some(LocalEvent::MouseDelta { dx, dy })
+        }
+
+        kCGEventLeftMouseDown | kCGEventLeftMouseUp | kCGEventRightMouseDown
+        | kCGEventRightMouseUp | kCGEventOtherMouseDown | kCGEventOtherMouseUp => {
+            let number = unsafe { CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber) };
+            let button = match number {
+                0 => MouseButton::Left,
+                1 => MouseButton::Right,
+                2 => MouseButton::Middle,
+                3 => MouseButton::Back,
+                4 => MouseButton::Forward,
+                n => MouseButton::Other(n as u8),
+            };
+            let pressed = matches!(
+                event_type,
+                kCGEventLeftMouseDown | kCGEventRightMouseDown | kCGEventOtherMouseDown
+            );
+            Some(LocalEvent::Button { button, pressed })
+        }
+
+        kCGEventScrollWheel => {
+            let dy = unsafe { CGEventGetDoubleValueField(event, kCGScrollWheelEventDeltaAxis1) };
+            let dx = unsafe { CGEventGetDoubleValueField(event, kCGScrollWheelEventDeltaAxis2) };
+            Some(LocalEvent::Wheel {
+                dx: dx as f32,
+                dy: dy as f32,
+            })
+        }
+
+        kCGEventKeyDown | kCGEventKeyUp => {
+            let vk = unsafe { CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) } as u16;
+            let repeat =
+                unsafe { CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) } != 0;
+            match vk_to_hid(vk) {
+                Some(key) => Some(LocalEvent::Key {
+                    key,
+                    pressed: event_type == kCGEventKeyDown,
+                    modifiers,
+                    repeat,
+                }),
+                None => {
+                    tracing::trace!(vk, "unmapped macOS keycode; passing through locally");
+                    return pass_through(shared, event);
+                }
+            }
+        }
+
+        kCGEventFlagsChanged => {
+            let vk = unsafe { CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) } as u16;
+            match vk_to_hid(vk) {
+                // A flagsChanged says nothing about up vs down directly. Infer
+                // it: if this key's role is set in the new flags, it just went
+                // down. Correct unless both the left and right key of a pair
+                // are held, where the release of the first looks like a
+                // no-op — harmless, since the modifier really is still down.
+                Some(key) => key.modifier_bit().map(|bit| LocalEvent::Key {
+                    key,
+                    pressed: modifiers.contains(bit),
+                    modifiers,
+                    repeat: false,
+                }),
+                None => None,
+            }
+        }
+
+        _ => None,
+    };
+
+    if let Some(local) = local {
+        shared.emit(local);
+    }
+    pass_through(shared, event)
+}
+
+/// Returning NULL drops the event; returning it delivers it locally.
+fn pass_through(shared: &CaptureShared, event: CGEventRef) -> CGEventRef {
+    if shared.swallow.load(Ordering::SeqCst) {
+        ptr::null_mut()
+    } else {
+        event
+    }
+}

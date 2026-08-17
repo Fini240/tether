@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Local machine identity + paired-peer state. Never commit: contains the
+# private key this machine uses to authenticate to its peers.
+/.tether-state/

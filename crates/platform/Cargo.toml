@@ -1,0 +1,18 @@
+[package]
+name = "tether-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tether-proto.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true }
+# `image-data` is a default feature and is what gives us get_image/set_image.
+arboard = "3"
+png = "0.17"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
