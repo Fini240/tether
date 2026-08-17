@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Tether</string>
+	<key>CFBundleDisplayName</key>
+	<string>Tether</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.tether.Tether</string>
+	<key>CFBundleExecutable</key>
+	<string>Tether</string>
+	<key>CFBundleIconFile</key>
+	<string>Tether</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+
+	<!-- Menu bar accessory: no Dock icon, no app switcher entry. There is no
+	     window to show, so a Dock icon would only be something to click that
+	     does nothing. The status item is the whole interface. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Shown in the Input Monitoring prompt. Accessibility has no equivalent
+	     key — macOS words that dialog itself and gives no way to explain why
+	     the app is asking, which is why the menu spells it out instead. -->
+	<key>NSInputMonitoringUsageDescription</key>
+	<string>Tether reads your keyboard and mouse so it can forward them to your other computers when the pointer crosses a screen edge.</string>
+</dict>
+</plist>

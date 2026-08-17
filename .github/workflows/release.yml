@@ -54,8 +54,8 @@ jobs:
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "version=${tag#v}" >>"$GITHUB_OUTPUT"
 
-      # macOS gets a universal binary, signed standalone. No .app or .dmg:
-      # see the header of bundle.sh.
+      # macOS gets three things: Tether.app (menu bar front end with the
+      # daemon bundled in), a .dmg wrapping it, and the bare signed CLI.
       - name: Build and bundle (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -111,7 +111,7 @@ jobs:
         run: |
           mkdir -p dist
           find artifacts -type f \
-            \( -name '*.tar.gz' -o -name '*.zip' \) \
+            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' \) \
             -exec cp {} dist/ \;
           # Rebuild rather than concatenating the per-platform files: their
           # path columns come from three different build machines.

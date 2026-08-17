@@ -18,10 +18,8 @@ Each release ships a macOS universal build (Apple Silicon and Intel in one
 binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
 `SHA256SUMS` file.
 
-There is no `.app` or `.dmg`, on purpose. `tether` is a CLI that needs a
-subcommand, so an app wrapper would run it with no arguments and exit
-silently — an installer that appears to work and does nothing. A real bundle
-comes with the tray UI.
+macOS also gets `Tether.app` in a `.dmg` — a menu bar app with the daemon
+bundled inside it. Use that if you would rather click than type.
 
 > **While this repository is private, downloads need authentication.** GitHub
 > serves a 404 rather than a useful error to an unauthenticated request, so the
@@ -80,7 +78,8 @@ cargo build --release
 To produce the release artifacts yourself:
 
 ```sh
-packaging/macos/bundle.sh          # signed universal binary + checksums
+packaging/macos/bundle.sh          # Tether.app, .dmg, signed CLI, checksums
+python3 packaging/macos/make_icon.py   # just the icon
 ```
 
 Try it without a second computer — a host and a client in one terminal each,
@@ -172,8 +171,9 @@ Done: edge switching, multi-monitor, cursor lock, jump-to-machine hotkeys,
 modifier remapping, clipboard text and images, mDNS discovery with manual
 fallback, TLS with pinning, config persistence, graceful reconnect.
 
-Not done yet: file transfer (frames exist, offers are refused), the arrangement
-UI, rich-text clipboard (degrades to plain text), lazy clipboard pull, live
+Not done yet: file transfer (frames exist, offers are refused), the drag-and-drop
+arrangement UI (the menu bar app can start and stop the daemon, but not yet
+position screens), rich-text clipboard (degrades to plain text), lazy clipboard pull, live
 re-layout when a client's resolution changes, hotkey suppression while the
 cursor is on the host, tray app and service packaging.
 
