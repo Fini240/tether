@@ -99,13 +99,13 @@ fn to_source(event: LocalEvent) -> SourceEvent {
     }
 }
 
-/// Why a session ended. Drives whether we back off before retrying.
+/// Why a session ended. Drives whether we reconnect.
 enum Ended {
-    /// Clean: the host said goodbye, or the user asked us to stop.
-    Graceful,
-    /// The socket died. Retry with backoff.
+    /// The user asked us to stop. Do not reconnect, and return from `run`.
+    Stopped,
+    /// The host said goodbye, or the socket died. Reconnect.
     Dropped,
-    /// Stop trying entirely.
+    /// Something is misconfigured. Stop trying and report it.
     Fatal(anyhow::Error),
 }
 
@@ -220,8 +220,8 @@ pub async fn run(
             status.update(|s| s.detail = format!("connecting to {address}"));
         }
 
-        // A Stop from the interface has to be honoured between attempts too,
-        // or stopping while reconnecting would wait out the backoff.
+        // Between attempts as well as during a session, so stopping while
+        // reconnecting does not have to wait out the backoff.
         if let Some(rx) = &mut commands {
             if let Ok(Command::Stop) = rx.try_recv() {
                 break;
@@ -237,20 +237,17 @@ pub async fn run(
             &options,
             &mut input_rx,
             &status,
+            &mut commands,
         )
         .await;
 
         match outcome {
-            Ok(Ended::Graceful) => {
-                tracing::info!("disconnected");
-                backoff.reset();
-                // Ctrl-C returns Graceful too; distinguish by checking whether
-                // the user asked to stop.
-                if STOP.load(std::sync::atomic::Ordering::SeqCst) {
-                    break;
-                }
+            Ok(Ended::Stopped) => {
+                tracing::info!("stopped");
+                break;
             }
             Ok(Ended::Dropped) => {
+                tracing::info!("disconnected");
                 backoff.reset();
             }
             Ok(Ended::Fatal(err)) => {
@@ -295,7 +292,18 @@ pub async fn run(
     Ok(())
 }
 
-static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Await the next command, or never, when nothing is driving this session.
+///
+/// `pending()` rather than returning `None`: a `None` arm in a `select!` loop
+/// resolves instantly and spins the loop at full speed.
+async fn next_command(
+    commands: &mut Option<tokio::sync::mpsc::UnboundedReceiver<Command>>,
+) -> Option<Command> {
+    match commands {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
 
 /// Every address worth trying, best first.
 ///
@@ -355,6 +363,7 @@ async fn session_once(
     options: &Options,
     input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<LocalEvent>,
     status: &Option<crate::control::StatusHandle>,
+    commands: &mut Option<tokio::sync::mpsc::UnboundedReceiver<Command>>,
 ) -> Result<Ended> {
     let connected = connect(address, identity, trust.clone()).await?;
     let host_fingerprint = connected.fingerprint;
@@ -449,9 +458,20 @@ async fn session_once(
             biased;
 
             _ = session::shutdown_signal() => {
-                STOP.store(true, std::sync::atomic::Ordering::SeqCst);
                 let _ = connection.send(Frame::Bye("client shutting down".into())).await;
-                return Ok(Ended::Graceful);
+                return Ok(Ended::Stopped);
+            }
+
+            // Without this arm a connected client never saw a Stop at all: the
+            // only check was between connection attempts, so an interface
+            // asking it to stop waited for the connection to break first —
+            // which, for a healthy connection, is never.
+            Some(command) = next_command(commands) => {
+                if matches!(command, Command::Stop) {
+                    tracing::info!("stopping at the interface's request");
+                    let _ = connection.send(Frame::Bye("client stopping".into())).await;
+                    return Ok(Ended::Stopped);
+                }
             }
 
             frame = connection.next() => {

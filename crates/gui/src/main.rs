@@ -72,7 +72,12 @@ struct Session {
     role: Role,
     control: UiControl,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Set when Stop has been asked for and we are waiting for it to land.
+    stopping_since: Option<std::time::Instant>,
 }
+
+/// How long to keep waiting for a session to wind down before giving up on it.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(6);
 
 struct TetherApp {
     config: Config,
@@ -224,6 +229,7 @@ impl TetherApp {
                     role,
                     control: ui,
                     thread: Some(thread),
+                    stopping_since: None,
                 });
                 self.pairing = false;
             }
@@ -231,20 +237,78 @@ impl TetherApp {
         }
     }
 
+    /// Ask the session to stop. Never blocks.
+    ///
+    /// Blocking the UI thread on a join here froze the whole window, and a
+    /// frozen window says nothing at all about what is wrong. The session is
+    /// kept and reaped in `poll` instead, so the window keeps drawing and can
+    /// say "stopping…" while it happens.
     fn stop(&mut self) {
+        if let Some(session) = &mut self.session {
+            if session.stopping_since.is_none() {
+                session.control.send(Command::Stop);
+                session.stopping_since = Some(std::time::Instant::now());
+            }
+        }
+    }
+
+    /// Stop and wait, for shutdown only.
+    ///
+    /// Worth blocking for here: on macOS the session holds an event tap, and
+    /// leaving one installed by a process that has gone away is how you end up
+    /// with a keyboard that does nothing.
+    fn stop_and_wait(&mut self) {
+        self.stop();
         if let Some(mut session) = self.session.take() {
-            session.control.send(Command::Stop);
             if let Some(thread) = session.thread.take() {
-                // The session loop breaks on Stop and unwinds quickly; joining
-                // keeps a half-stopped daemon from overlapping the next start,
-                // which would fight over the same port and the same event tap.
-                let _ = thread.join();
+                let deadline = std::time::Instant::now() + STOP_GRACE;
+                while !thread.is_finished() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if thread.is_finished() {
+                    let _ = thread.join();
+                }
+            }
+        }
+        self.status = Status::default();
+    }
+
+    /// Clear a stopping session once its thread has actually finished.
+    fn reap(&mut self) {
+        let finished = match &self.session {
+            Some(session) => match (&session.stopping_since, &session.thread) {
+                (Some(since), Some(thread)) => thread.is_finished() || since.elapsed() > STOP_GRACE,
+                (Some(_), None) => true,
+                _ => false,
+            },
+            None => false,
+        };
+        if !finished {
+            return;
+        }
+
+        if let Some(mut session) = self.session.take() {
+            match session.thread.take() {
+                Some(thread) if thread.is_finished() => {
+                    let _ = thread.join();
+                }
+                Some(_) => {
+                    // Past the grace period and still running. Letting go of
+                    // the handle is the lesser evil: the alternative is a
+                    // window that never responds again.
+                    self.error = Some(
+                        "the session did not stop cleanly. Quit and reopen Tether                          before starting another one."
+                            .into(),
+                    );
+                }
+                None => {}
             }
         }
         self.status = Status::default();
     }
 
     fn poll(&mut self) {
+        self.reap();
         if let Some(session) = &self.session {
             self.status = session.control.status();
             if let Some(err) = self.status.error.clone() {
@@ -263,10 +327,17 @@ impl TetherApp {
 impl eframe::App for TetherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        if self.running() {
+        let busy = self.running()
+            || self
+                .session
+                .as_ref()
+                .is_some_and(|s| s.stopping_since.is_some());
+        if busy {
             // The daemon changes state on its own schedule; without this the
-            // window would only refresh when the mouse moves over it.
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            // window would only refresh when the mouse moves over it — and a
+            // window that stops redrawing is indistinguishable from one that
+            // has hung.
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| self.header(ui));
@@ -279,8 +350,8 @@ impl eframe::App for TetherApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // Closing the window must not leave a daemon holding an event tap and
-        // suppressing the keyboard.
-        self.stop();
+        // suppressing the keyboard, so this one does wait.
+        self.stop_and_wait();
     }
 }
 
@@ -292,6 +363,10 @@ impl TetherApp {
             ui.add_space(8.0);
 
             let (dot, label) = match (&self.session, self.status.running) {
+                (Some(session), _) if session.stopping_since.is_some() => (
+                    egui::Color32::from_rgb(255, 179, 64),
+                    "Stopping…".to_string(),
+                ),
                 (Some(session), true) => (
                     egui::Color32::from_rgb(52, 199, 89),
                     match session.role {
@@ -339,9 +414,18 @@ impl TetherApp {
         ui.heading("Session");
         ui.add_space(4.0);
 
-        if self.session.is_some() {
+        if let Some(session) = &self.session {
+            let stopping = session.stopping_since.is_some();
+            let label = if stopping { "Stopping…" } else { "Stop" };
             if ui
-                .add_sized([ui.available_width(), 32.0], egui::Button::new("Stop"))
+                .add_sized(
+                    [ui.available_width(), 32.0],
+                    egui::Button::new(label).sense(if stopping {
+                        egui::Sense::hover()
+                    } else {
+                        egui::Sense::click()
+                    }),
+                )
                 .clicked()
             {
                 self.stop();

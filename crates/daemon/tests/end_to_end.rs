@@ -510,3 +510,94 @@ async fn a_driving_client_can_get_the_pointer_back() {
         harness.host_input.injected()
     );
 }
+
+/// A connected client must stop when asked, promptly.
+///
+/// It did not. The only check for a stop request sat between connection
+/// attempts, so a client with a healthy connection never looked at it — and a
+/// window that joined the session thread on Stop froze for as long as that
+/// took, which was forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connected_client_stops_when_asked() {
+    use tether_daemon::control;
+
+    let dir = TempDir::new("stop");
+
+    let (host_backend, _host_handle) =
+        backend_with(vec![fake_monitor(0, 0, 0, HOST_WIDTH, HOST_HEIGHT, true)]);
+    let (client_backend, _client_handle) = backend_with(vec![fake_monitor(
+        0,
+        0,
+        0,
+        CLIENT_WIDTH,
+        CLIENT_HEIGHT,
+        true,
+    )]);
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(host::run(
+        host::Options {
+            bind: "127.0.0.1:0".into(),
+            pairing: true,
+            config_path: dir.join("host.json"),
+            advertise: false,
+            ready: Some(ready_tx),
+            control: None,
+        },
+        Config {
+            name: "stop-host".into(),
+            ..Config::default()
+        },
+        Identity::generate().unwrap(),
+        host_backend,
+    ));
+
+    let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("host did not listen")
+        .expect("ready channel dropped");
+
+    let (daemon, ui) = control::channel();
+    let client = tokio::spawn(clientmode::run(
+        clientmode::Options {
+            address: Some(addr.to_string()),
+            pairing: true,
+            config_path: dir.join("client.json"),
+            control: Some(daemon),
+        },
+        Config {
+            name: "stop-client".into(),
+            ..Config::default()
+        },
+        Identity::generate().unwrap(),
+        client_backend,
+    ));
+
+    // Wait until it is genuinely connected — stopping a client that never got
+    // anywhere would pass for the wrong reason.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut connected = false;
+    while tokio::time::Instant::now() < deadline {
+        if !ui.status().peers.is_empty() {
+            connected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(connected, "the client never connected");
+
+    assert!(
+        ui.send(control::Command::Stop),
+        "the daemon was already gone"
+    );
+
+    let stopped = tokio::time::timeout(Duration::from_secs(5), client).await;
+    assert!(
+        stopped.is_ok(),
+        "a connected client ignored Stop and kept running"
+    );
+    stopped
+        .unwrap()
+        .expect("client task panicked")
+        .expect("client returned an error");
+}
