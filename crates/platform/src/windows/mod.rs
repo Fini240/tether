@@ -88,3 +88,56 @@ impl ScreenLock for WindowsScreenLock {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::traits::LocalEvent;
+    use std::time::Duration;
+
+    /// Warping must not come back as the user moving the mouse.
+    ///
+    /// The distinction is invisible in the type system — both `SetCursorPos`
+    /// and `SendInput` move the pointer, and both wake the hook — so it is
+    /// worth pinning down. Skipped where the hooks cannot install, which is
+    /// any session without an interactive desktop.
+    #[test]
+    fn a_warp_is_not_reported_as_input() {
+        let mut backend = match super::backend() {
+            Ok(backend) => backend,
+            Err(_) => return,
+        };
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        if backend.capture.start(tx).is_err() {
+            return; // no interactive desktop; nothing to assert about
+        }
+
+        let Ok(origin) = backend.pointer.position() else {
+            backend.capture.stop();
+            return;
+        };
+
+        for step in 1..=4 {
+            let _ = backend.pointer.warp(tether_proto::Point::new(
+                origin.x + step * 17,
+                origin.y + step * 11,
+            ));
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        std::thread::sleep(Duration::from_millis(150));
+
+        let reported: Vec<LocalEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let _ = backend.pointer.warp(origin);
+        backend.capture.stop();
+
+        let moves = reported
+            .iter()
+            .filter(|e| matches!(e, LocalEvent::MouseDelta { .. }))
+            .count();
+        assert_eq!(
+            moves, 0,
+            "warping the cursor was reported back as {moves} mouse movements; \
+             every crossing would fling the pointer by however far it jumped"
+        );
+    }
+}

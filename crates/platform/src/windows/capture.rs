@@ -29,6 +29,9 @@ struct CaptureShared {
     swallow: AtomicBool,
     injected: AtomicU64,
     thread_id: AtomicU32,
+    /// Set while the hook is re-centring the cursor itself, so the move that
+    /// causes is not read back as the user moving the mouse.
+    pinning: AtomicBool,
     /// Where the pointer was last seen, for turning absolute hook positions
     /// into deltas.
     last: Mutex<POINT>,
@@ -64,6 +67,7 @@ impl WindowsCapture {
                     swallow: AtomicBool::new(false),
                     injected: AtomicU64::new(0),
                     thread_id: AtomicU32::new(0),
+                    pinning: AtomicBool::new(false),
                     last: Mutex::new(POINT { x: 0, y: 0 }),
                     anchor: Mutex::new(POINT { x: 0, y: 0 }),
                     modifiers: Mutex::new(Modifiers::NONE),
@@ -266,6 +270,17 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 
     let info = &*(lparam as *const MSLLHOOKSTRUCT);
 
+    // Our own re-centring, coming back round. Record where it put the pointer
+    // and say nothing.
+    if shared.pinning.load(Ordering::SeqCst) {
+        if wparam as u32 == WM_MOUSEMOVE {
+            if let Ok(mut last) = shared.last.lock() {
+                *last = info.pt;
+            }
+        }
+        return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+    }
+
     if info.dwExtraInfo == TETHER_EVENT_MARK {
         shared.injected.fetch_add(1, Ordering::Relaxed);
 
@@ -308,16 +323,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             if swallowing {
                 // Suppressing stops the cursor moving, so without putting it
                 // back on the anchor every event would measure from a stale
-                // point and motion would drift to a halt. The resulting
-                // SetCursorPos is itself injected, and filtered above.
+                // point and motion would drift to a halt.
+                //
+                // SetCursorPos re-enters this hook, and it carries no
+                // dwExtraInfo — the mark check above cannot see it, whatever
+                // an earlier comment here claimed. The flag is what keeps that
+                // re-entry from being reported as a hand on the mouse.
                 let anchor = match shared.anchor.lock() {
                     Ok(anchor) => *anchor,
                     Err(poisoned) => *poisoned.into_inner(),
                 };
-                SetCursorPos(anchor.x, anchor.y);
                 if let Ok(mut last) = shared.last.lock() {
                     *last = anchor;
                 }
+                shared.pinning.store(true, Ordering::SeqCst);
+                SetCursorPos(anchor.x, anchor.y);
+                shared.pinning.store(false, Ordering::SeqCst);
             }
 
             if delta != (0, 0) {

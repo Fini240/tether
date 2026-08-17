@@ -6,8 +6,8 @@ use std::sync::Mutex;
 use tether_proto::{InputEvent, KeyCode, Modifiers, MouseButton, Point};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    GetCursorPos, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN,
 };
 
 use super::keycodes::{hid_to_scancode, is_extended};
@@ -46,7 +46,7 @@ impl WindowsInject {
         }
     }
 
-    fn send(inputs: &[INPUT]) -> Result<()> {
+    pub(super) fn send(inputs: &[INPUT]) -> Result<()> {
         let sent = unsafe {
             SendInput(
                 inputs.len() as u32,
@@ -72,7 +72,7 @@ impl WindowsInject {
     /// desktop, which is not the pixel space monitors are reported in. Getting
     /// this conversion wrong is the classic multi-monitor bug where the cursor
     /// lands on the wrong screen or bunches up in a corner.
-    fn to_absolute(x: i32, y: i32) -> (i32, i32) {
+    pub(super) fn to_absolute(x: i32, y: i32) -> (i32, i32) {
         let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
         let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
         let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.max(1);
@@ -86,7 +86,7 @@ impl WindowsInject {
         (nx.clamp(0, 65535), ny.clamp(0, 65535))
     }
 
-    fn mouse_input(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) -> INPUT {
+    pub(super) fn mouse_input(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, data: i32) -> INPUT {
         // mouseData is unsigned in the API but carries a signed wheel delta;
         // the cast is the documented way to pass a negative scroll.
         let data = data as u32;
@@ -256,12 +256,25 @@ impl InputInject for WindowsInject {
 /// events themselves, unlike macOS where flags ride on every event.
 pub fn modifiers_noop(_: Modifiers) {}
 
+/// Move the cursor without it being mistaken for the user moving it.
+///
+/// Through `SendInput`, not `SetCursorPos`. Both move the pointer and both
+/// wake the low-level hook — but only `SendInput` carries `dwExtraInfo`, which
+/// is how the hook recognises our own work. A `SetCursorPos` arrives looking
+/// exactly like a hand on the mouse, and the hook reports it as a movement of
+/// however far the pointer just jumped.
+///
+/// That mattered every time the pointer came back from another machine: the
+/// warp placing it at the entry point was read straight back as the user
+/// flinging the mouse across the desk.
 pub fn warp(to: Point) -> Result<()> {
-    let ok = unsafe { SetCursorPos(to.x, to.y) };
-    if ok == 0 {
-        return Err(PlatformError::backend("SetCursorPos failed"));
-    }
-    Ok(())
+    let (nx, ny) = WindowsInject::to_absolute(to.x, to.y);
+    WindowsInject::send(&[WindowsInject::mouse_input(
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        nx,
+        ny,
+        0,
+    )])
 }
 
 pub fn cursor_position() -> Result<Point> {
