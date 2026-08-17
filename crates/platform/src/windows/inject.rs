@@ -291,8 +291,9 @@ pub fn cursor_position() -> Result<Point> {
 ///
 /// `ShowCursor` is per-thread and only affects windows this process owns, and
 /// `SetSystemCursor` would replace the cursor system-wide and permanently.
-/// While a remote machine has the pointer, this one parks it in a corner
-/// instead — see the note in `mod.rs`.
+/// While a remote machine has the pointer, this one parks it in the middle of
+/// the primary display and pins it there instead — see `capture::set_swallow`
+/// for why the middle and not somewhere less in the way.
 pub fn set_cursor_visible(_visible: bool) -> Result<()> {
     Ok(())
 }

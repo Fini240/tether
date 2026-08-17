@@ -237,6 +237,158 @@ async fn keystrokes_reach_the_client_that_holds_the_cursor() {
     );
 }
 
+/// Crossing an edge the operating system clamps the cursor against, which is
+/// the only kind a desktop's *outer* edge ever is.
+///
+/// `cross_to_client` uses bare deltas, which is what a machine reports only
+/// while its own pointer is pinned. The path a host actually takes to leave its
+/// own screen is `MouseMoved`: a position the OS has already decided on, plus
+/// how far the device moved. Those two stop agreeing at the edge — the position
+/// cannot go any further while the device keeps moving — and the difference is
+/// the whole crossing.
+///
+/// Reported as "the mouse slides to the edge when I go from my PC to my Mac,
+/// and I can't use my keyboard on the Mac". Both halves came from the same
+/// place. The host applied the position *and* the delta on top of it, so it ran
+/// a full event ahead of the pointer and handed over while the visible cursor
+/// was still short of the edge — leaving it to finish sliding on its own. Then
+/// the events captured in the instant before suppression started arrived, each
+/// carrying a position back on the host, and each was believed: the pointer was
+/// yanked back off the client, and every keystroke after that went to the host
+/// while the cursor sat on the client's screen looking ready for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clamped_edge_crosses_and_the_keyboard_goes_with_it() {
+    let harness = start("clamped").await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut crossed = false;
+    while tokio::time::Instant::now() < deadline {
+        // Up against the last column the host's desktop has.
+        harness.host_input.emit(LocalEvent::MouseMoved {
+            x: HOST_WIDTH - 1,
+            y: 540,
+            dx: 900,
+            dy: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Still pushing right. The OS has nowhere left to put the pointer, so
+        // it reports the same position it did last time and only the device
+        // movement says anything at all.
+        harness.host_input.emit(LocalEvent::MouseMoved {
+            x: HOST_WIDTH - 1,
+            y: 540,
+            dx: 60,
+            dy: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        if harness.host_input.is_swallowing() {
+            crossed = true;
+            break;
+        }
+    }
+    assert!(
+        crossed,
+        "the pointer never left a host screen it was already clamped against"
+    );
+
+    // The tail of events captured before suppression began, arriving late.
+    // Every one of them reports a position on the host, and a purely vertical
+    // one carries nothing that would push it back over the edge.
+    for _ in 0..3 {
+        harness.host_input.emit(LocalEvent::MouseMoved {
+            x: HOST_WIDTH - 1,
+            y: 544,
+            dx: 0,
+            dy: 4,
+        });
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert!(
+        harness.host_input.is_swallowing(),
+        "a stale position report took the pointer back off the client"
+    );
+
+    harness.client_output.clear_injected();
+    harness.host_input.emit(LocalEvent::Key {
+        key: KeyCode::C,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+    });
+
+    let injected = wait_for(&harness.client_output, 1).await;
+    assert!(
+        injected.iter().any(|event| matches!(
+            event,
+            InputEvent::Key {
+                key: KeyCode::C,
+                pressed: true,
+                ..
+            }
+        )),
+        "the client holds the cursor but never got the keystroke: {injected:?}"
+    );
+}
+
+/// The router must land where the OS put the pointer, not a whole event past it.
+///
+/// This is the "slides to the edge" half on its own. A fast flick reports a
+/// large movement and the position the OS reached with it — the same motion,
+/// described twice. Counting it twice puts the router a whole event ahead of
+/// the cursor, so control leaves while the pointer the user is watching is
+/// still well inside the screen, and it finishes the journey to the edge on its
+/// own with nothing driving it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn motion_the_os_applied_does_not_cross_early() {
+    let harness = start("noearly").await;
+
+    // Cross and come back, which is the only way to know the client has
+    // finished joining — until it has, there is nothing beyond the edge to
+    // cross onto and this would pass for the wrong reason.
+    cross_to_client(&harness).await;
+    for _ in 0..6 {
+        harness.host_input.emit(LocalEvent::MouseDelta {
+            dx: -CLIENT_WIDTH,
+            dy: 0,
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        if !harness.host_input.is_swallowing() {
+            break;
+        }
+    }
+    assert!(
+        !harness.host_input.is_swallowing(),
+        "the pointer never came back to the host"
+    );
+
+    // Settle: the pointer is here and nothing moved.
+    harness.host_input.emit(LocalEvent::MouseMoved {
+        x: 960,
+        y: 540,
+        dx: 0,
+        dy: 0,
+    });
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // Now one fast flick that the OS applied in full, ending 210px short of
+    // the edge. Nothing here asks to leave the screen.
+    harness.host_input.emit(LocalEvent::MouseMoved {
+        x: HOST_WIDTH - 210,
+        y: 540,
+        dx: 750,
+        dy: 0,
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert!(
+        !harness.host_input.is_swallowing(),
+        "control left the host while its cursor was still 210px inside the screen"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_cursor_comes_back_to_the_host() {
     let harness = start("return").await;

@@ -24,6 +24,27 @@ pub enum Transition {
     Blocked,
 }
 
+/// How much of a device movement the operating system declined to apply.
+///
+/// Zero while the pointer is free: the OS moved it by exactly what the device
+/// reported. At the outer edge of a desktop the OS clamps and the remainder is
+/// the user still pushing, which is what has to cross to the next machine.
+///
+/// Clamped to the sign and size of the movement itself, because the OS also
+/// moves the pointer in ways the device never asked for — the sideways slide
+/// crossing between misaligned screens is motion it *invented*, and read
+/// naively that comes out as a large push in the opposite direction.
+fn unapplied(delta: i32, applied: i32) -> i32 {
+    if delta == 0 {
+        return 0;
+    }
+    let left = delta - applied;
+    if left.signum() != delta.signum() {
+        return 0;
+    }
+    left.clamp(-delta.abs(), delta.abs())
+}
+
 pub struct CursorRouter {
     layout: Layout,
     /// The machine with the physical keyboard and mouse.
@@ -114,6 +135,15 @@ impl CursorRouter {
     /// the one being physically touched while it also holds the pointer.
     /// Anywhere else the cursor is either pinned or under our control, and its
     /// position says nothing.
+    ///
+    /// Adopts the position and nothing else. It deliberately does *not* move
+    /// ownership to `machine`: a position report is a correction, not a
+    /// routing decision, and letting one hand the pointer back would undo a
+    /// crossing. Events captured in the moment before the host started
+    /// suppressing are still in flight when the crossing is applied, and every
+    /// one of them carries a position on the host — enough, when it reassigned
+    /// ownership, to drag the cursor back off the client and take the keyboard
+    /// with it.
     pub fn resync_on(&mut self, machine: MachineId, local: Point) {
         if let Some(placement) = self.layout.get(machine) {
             let global = local + placement.origin;
@@ -126,9 +156,38 @@ impl CursorRouter {
                 .any(|m| placement.global_rect_of(m).contains(global))
             {
                 self.position = global;
-                self.active = machine;
             }
         }
+    }
+
+    /// Feed one movement as the machine holding the pointer reported it: where
+    /// its own OS has since put the cursor, and how far the physical device
+    /// actually moved.
+    ///
+    /// The two are different measurements and both are needed. The position is
+    /// the truth while the pointer is loose on that desktop — it includes the
+    /// sideways slide the OS performs crossing between screens of different
+    /// heights, which no amount of adding up device movement predicts. But the
+    /// position stops at the outer edge of that desktop, and pushing past that
+    /// edge is exactly how the cursor reaches the next machine. What the OS
+    /// refused to apply is the push that crosses.
+    ///
+    /// Adding both — adopting the position *and* then applying the whole delta
+    /// on top — moves the cursor twice per event. The router then runs one
+    /// event's worth of motion ahead of the pointer the user can see and hands
+    /// over while that pointer is still short of the edge, which reads as the
+    /// cursor sliding into the edge on its own after control has already gone.
+    pub fn move_reported(&mut self, machine: MachineId, at: Point, dx: i32, dy: i32) -> Transition {
+        if self.active != machine {
+            // The pointer is not on the reporting machine, so its cursor is
+            // either pinned or under our control and its position says
+            // nothing. The device movement is still real.
+            return self.move_by(dx, dy);
+        }
+        let before = self.position;
+        self.resync_on(machine, at);
+        let applied = self.position - before;
+        self.move_by(unapplied(dx, applied.x), unapplied(dy, applied.y))
     }
 
     /// Force the cursor back to the host's primary monitor.
@@ -487,5 +546,96 @@ mod resync_tests {
             Transition::Switch { to, .. } => assert_eq!(to.machine, MachineId(2)),
             other => panic!("did not cross after the OS moved the pointer: {other:?}"),
         }
+    }
+
+    /// Two 1920x1080 machines side by side, host on the left — the same
+    /// fixture as the routing tests, rebuilt here for the reported-move ones.
+    fn side_by_side() -> CursorRouter {
+        use crate::layout::Layout;
+        let placement = |id: u64| Placement {
+            machine: MachineId(id),
+            name: format!("m{id}"),
+            platform: Platform::Windows,
+            origin: Point::new(0, 0),
+            monitors: vec![MonitorInfo {
+                id: MonitorId(0),
+                name: "mon".into(),
+                bounds: Rect::new(0, 0, 1920, 1080),
+                scale: 1.0,
+                primary: true,
+            }],
+        };
+        let mut layout = Layout::new();
+        layout.auto_place(placement(1));
+        layout.auto_place(placement(2));
+        CursorRouter::new(layout, MachineId(1))
+    }
+
+    #[test]
+    fn a_move_the_os_already_applied_is_not_applied_again() {
+        // The pointer moved 40px and the OS put it there. The router must land
+        // on the same pixel, not 40 further on. Running ahead is what handed
+        // control over while the visible cursor was still short of the edge,
+        // leaving it to slide into the edge on its own afterwards.
+        let mut router = side_by_side();
+        let transition = router.move_reported(MachineId(1), Point::new(1000, 540), 40, 0);
+        assert!(matches!(transition, Transition::Stay(_)));
+        assert_eq!(router.position(), Point::new(1000, 540));
+    }
+
+    #[test]
+    fn pushing_past_a_clamped_edge_is_what_crosses() {
+        let mut router = side_by_side();
+        // Walk to the last column the host's desktop has.
+        router.move_reported(MachineId(1), Point::new(1919, 540), 959, 0);
+        assert_eq!(router.position(), Point::new(1919, 540));
+        assert_eq!(router.active(), MachineId(1));
+
+        // Still pushing right. The OS has nowhere left to put the pointer, so
+        // it reports the same position; the device movement is the only
+        // evidence the user is still asking to go that way.
+        match router.move_reported(MachineId(1), Point::new(1919, 540), 40, 0) {
+            Transition::Switch { to, .. } => {
+                assert_eq!(to.machine, MachineId(2));
+                assert_eq!(to.local, Point::new(39, 540));
+            }
+            other => panic!("expected a crossing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_slide_between_misaligned_screens_is_not_read_as_a_push() {
+        // Crossing the host's own seam, the OS drops the pointer 100px to a
+        // row the next screen actually has. That is motion the OS invented,
+        // not motion it refused — treating the difference as leftover push
+        // would fling the cursor back up and out of the desktop.
+        let mut router = ragged();
+        router.move_reported(MachineId(1), Point::new(1930, 100), 0, 0);
+
+        let transition = router.move_reported(MachineId(1), Point::new(1900, 200), -20, 0);
+        assert!(matches!(transition, Transition::Stay(_)), "{transition:?}");
+        assert_eq!(router.position(), Point::new(1900, 200));
+        assert_eq!(router.active(), MachineId(1));
+    }
+
+    #[test]
+    fn a_report_from_the_host_cannot_take_the_pointer_off_a_client() {
+        // Events captured in the instant before suppression started are still
+        // in flight when the crossing lands, and each carries a position on
+        // the host. Believing one hands the pointer back, and the keyboard
+        // goes with it — the host then delivers keystrokes to itself while the
+        // user watches an idle cursor on the client.
+        let mut router = side_by_side();
+        router.move_reported(MachineId(1), Point::new(1919, 540), 959, 0);
+        router.move_reported(MachineId(1), Point::new(1919, 540), 40, 0);
+        assert_eq!(router.active(), MachineId(2));
+
+        router.move_reported(MachineId(1), Point::new(1919, 540), 5, 0);
+        assert_eq!(router.active(), MachineId(2));
+        assert_eq!(router.position(), Point::new(1964, 540));
+
+        // Even applied directly, a resync is a correction and never a handover.
+        router.resync_on(MachineId(1), Point::new(1919, 540));
+        assert_eq!(router.active(), MachineId(2));
     }
 }

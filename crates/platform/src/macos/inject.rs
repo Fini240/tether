@@ -14,6 +14,18 @@ use crate::traits::{InputInject, PlatformError, Result};
 /// Arbitrary; just needs to be a value nothing else plausibly writes.
 pub const TETHER_EVENT_MARK: i64 = 0x7E7_4E12_D1CE;
 
+/// Where [`warp`] last put the cursor, waiting to be picked up by the injector.
+///
+/// A warp moves the very cursor the injector computes its deltas against, but
+/// it is a free function on the `Pointer` side of the backend and cannot reach
+/// the injector's state. Unshared, the injector goes on believing the pointer
+/// is wherever it last drove it — the far side of the screen, or the origin on
+/// the first crossing of a session — and the first motion after the pointer
+/// enters this machine carries a delta the size of the whole jump. Applications
+/// that read the delta fields rather than the position (games, 3D viewports)
+/// lurch across the scene once per crossing.
+static WARPED: Mutex<Option<CGPoint>> = Mutex::new(None);
+
 /// Everything the injector must remember between events.
 ///
 /// A synthesised event carries no context, so we supply it: a mouse-up needs a
@@ -200,6 +212,13 @@ impl InputInject for MacInject {
             .lock()
             .map_err(|_| PlatformError::backend("inject state poisoned"))?;
 
+        // A warp since the last event moved the cursor out from under us.
+        if let Ok(mut warped) = WARPED.lock() {
+            if let Some(to) = warped.take() {
+                state.cursor = to;
+            }
+        }
+
         match event {
             InputEvent::MouseMove { x, y } => {
                 let to = CGPoint {
@@ -271,10 +290,16 @@ impl InputInject for MacInject {
 /// mouse with it.
 pub fn warp(to: Point) -> Result<()> {
     unsafe {
-        let err = CGWarpMouseCursorPosition(CGPoint {
+        let at = CGPoint {
             x: to.x as f64,
             y: to.y as f64,
-        });
+        };
+        let err = CGWarpMouseCursorPosition(at);
+        if err == 0 {
+            if let Ok(mut warped) = WARPED.lock() {
+                *warped = Some(at);
+            }
+        }
         if err != 0 {
             return Err(PlatformError::backend(format!(
                 "CGWarpMouseCursorPosition failed: {err}"

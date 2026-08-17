@@ -20,7 +20,14 @@ pub use message::{Frame, Hello, MachinePlacement, Platform, Welcome};
 /// Bumped on any breaking change to the types in this crate. The host refuses
 /// clients that do not match, with a message naming both versions — a silent
 /// desync here shows up as phantom keystrokes, which is miserable to debug.
-pub const PROTOCOL_VERSION: u16 = 1;
+///
+/// Overdue at 2. Both `Frame::Arrangement` (v0.2.4) and `SourceEvent::
+/// MouseMoved` (v0.3.2) were inserted into the middle of their enums, which
+/// renumbers every variant after them: bincode encodes a variant as its index,
+/// so a machine on either side of one of those releases decodes a `Wheel` as a
+/// `Button` and a `Key` as a `Wheel`. Nothing refused the connection, because
+/// the version this compares had not moved since the first commit.
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Default TCP port. Also the port advertised over mDNS.
 pub const DEFAULT_PORT: u16 = 24800;

@@ -675,16 +675,13 @@ fn handle_local(
 ) -> Result<()> {
     match local {
         LocalEvent::MouseMoved { x, y, dx, dy } => {
-            // Reported by the machine whose own cursor moved, so it is the
-            // authority on where the pointer now is — including any sideways
-            // slide its OS performed crossing between screens of different
-            // heights, which adding up device movement can never predict.
-            //
-            // The delta still decides crossings: once the pointer is pinned
-            // against the outer edge of that desktop the position stops
-            // changing while the user is plainly still pushing.
-            router.resync_on(input_owner, Point::new(x, y));
-            let transition = router.move_by(dx, dy);
+            // Position *and* device movement, and the router needs both: the
+            // position carries any sideways slide the OS performed crossing
+            // between screens of different heights, and whatever the OS
+            // refused to apply at the outer edge is the push that crosses to
+            // the next machine. Applying both in full moves the cursor twice
+            // per event — see `CursorRouter::move_reported`.
+            let transition = router.move_reported(input_owner, Point::new(x, y), dx, dy);
             apply_transition(transition, router, clients, backend, input_owner);
             Ok(())
         }
@@ -806,6 +803,14 @@ fn apply_transition(
     backend: &mut Backend,
     input_owner: MachineId,
 ) {
+    // Derived from where the router now has the pointer, and recomputed on
+    // every event rather than assigned at the crossings. Set only when
+    // crossing, it can be left contradicting the router — suppressing input
+    // that has nowhere to go — and nothing after that recomputes it. Doing it
+    // here also gets it done before the switch is announced, so no stray local
+    // event lands on this machine in between.
+    update_host_swallow(router, backend, input_owner);
+
     match transition {
         Transition::Blocked => {
             // Worth seeing: a move refused because the canvas has a gap there,
@@ -851,25 +856,13 @@ fn apply_transition(
             }
 
             if to.machine == router.host() {
-                backend.capture.set_swallow(false);
                 let _ = backend.pointer.warp(to.local);
-                let _ = backend.pointer.set_visible(true);
-            } else {
-                // Suppress local delivery *before* announcing the switch, so no
-                // stray event lands on the host in between. Only if the host is
-                // the one being touched, though: if somebody else is driving,
-                // this machine's own keyboard must stay live so its user can
-                // take control back.
-                let host_is_driving = input_owner == router.host();
-                backend.capture.set_swallow(host_is_driving);
-                let _ = backend.pointer.set_visible(!host_is_driving);
-                if let Some(client) = clients.get(&to.machine) {
-                    let _ = client.tx.send(Frame::Enter {
-                        monitor: to.monitor,
-                        x: to.local.x,
-                        y: to.local.y,
-                    });
-                }
+            } else if let Some(client) = clients.get(&to.machine) {
+                let _ = client.tx.send(Frame::Enter {
+                    monitor: to.monitor,
+                    x: to.local.x,
+                    y: to.local.y,
+                });
             }
         }
     }
