@@ -113,9 +113,9 @@ impl Layout {
 
     /// Bounding box of the entire canvas.
     pub fn bounds(&self) -> Rect {
-        self.machines
-            .iter()
-            .fold(Rect::new(0, 0, 0, 0), |acc, p| acc.union(&p.global_bounds()))
+        self.machines.iter().fold(Rect::new(0, 0, 0, 0), |acc, p| {
+            acc.union(&p.global_bounds())
+        })
     }
 
     /// Which monitor covers this global point, if any.
@@ -229,7 +229,10 @@ mod tests {
         let mut layout = Layout::new();
         layout.auto_place(machine(
             1,
-            vec![monitor(0, 0, 0, 1920, 1080), monitor(1, -1280, 0, 1280, 1024)],
+            vec![
+                monitor(0, 0, 0, 1920, 1080),
+                monitor(1, -1280, 0, 1280, 1024),
+            ],
         ));
         assert_eq!(layout.bounds().left(), 0);
         assert_eq!(layout.bounds().width, 1920 + 1280);

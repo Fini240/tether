@@ -90,10 +90,13 @@ impl ScreenLock for MacScreenLock {
         // real lock. `pmset displaysleepnow` only sleeps the display and locks
         // solely if the user has "require password after sleep" set, so it is
         // the fallback rather than the first choice.
-        const CGSESSION: &str = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession";
+        const CGSESSION: &str =
+            "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession";
 
         if std::path::Path::new(CGSESSION).exists() {
-            let status = std::process::Command::new(CGSESSION).arg("-suspend").status();
+            let status = std::process::Command::new(CGSESSION)
+                .arg("-suspend")
+                .status();
             match status {
                 Ok(s) if s.success() => return Ok(()),
                 Ok(s) => tracing::warn!(?s, "CGSession -suspend failed; falling back to pmset"),

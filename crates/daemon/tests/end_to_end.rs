@@ -58,14 +58,8 @@ impl Drop for TempDir {
 async fn start(tag: &str) -> Harness {
     let dir = TempDir::new(tag);
 
-    let (host_backend, host_input) = backend_with(vec![fake_monitor(
-        0,
-        0,
-        0,
-        HOST_WIDTH,
-        HOST_HEIGHT,
-        true,
-    )]);
+    let (host_backend, host_input) =
+        backend_with(vec![fake_monitor(0, 0, 0, HOST_WIDTH, HOST_HEIGHT, true)]);
     let (client_backend, client_output) = backend_with(vec![fake_monitor(
         0,
         0,

@@ -26,7 +26,12 @@ pub enum ModRole {
 }
 
 impl ModRole {
-    const ALL: [ModRole; 4] = [ModRole::Shift, ModRole::Control, ModRole::Alt, ModRole::Meta];
+    const ALL: [ModRole; 4] = [
+        ModRole::Shift,
+        ModRole::Control,
+        ModRole::Alt,
+        ModRole::Meta,
+    ];
 
     fn index(self) -> usize {
         match self {
@@ -96,14 +101,24 @@ impl Default for ModifierMap {
 impl ModifierMap {
     pub const fn identity() -> Self {
         Self {
-            to: [ModRole::Shift, ModRole::Control, ModRole::Alt, ModRole::Meta],
+            to: [
+                ModRole::Shift,
+                ModRole::Control,
+                ModRole::Alt,
+                ModRole::Meta,
+            ],
         }
     }
 
     /// Control ⇄ Meta. The mapping that makes ⌘C work as Ctrl+C.
     pub const fn swap_control_meta() -> Self {
         Self {
-            to: [ModRole::Shift, ModRole::Meta, ModRole::Alt, ModRole::Control],
+            to: [
+                ModRole::Shift,
+                ModRole::Meta,
+                ModRole::Alt,
+                ModRole::Control,
+            ],
         }
     }
 
@@ -202,7 +217,11 @@ mod tests {
     fn the_swap_is_its_own_inverse() {
         let there = ModifierMap::between(Platform::MacOS, Platform::Linux);
         let back = ModifierMap::between(Platform::Linux, Platform::MacOS);
-        for key in [KeyCode::LEFT_META, KeyCode::RIGHT_CONTROL, KeyCode::LEFT_ALT] {
+        for key in [
+            KeyCode::LEFT_META,
+            KeyCode::RIGHT_CONTROL,
+            KeyCode::LEFT_ALT,
+        ] {
             assert_eq!(back.remap_key(there.remap_key(key)), key);
         }
     }

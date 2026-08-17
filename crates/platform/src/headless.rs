@@ -244,9 +244,10 @@ struct HeadlessClipboard {
 
 impl ClipboardAccess for HeadlessClipboard {
     fn read(&mut self) -> Result<ClipboardContents> {
-        Ok(self.contents.clone().unwrap_or_else(|| {
-            ClipboardContents::empty(ClipboardStamp { owner: 0, seq: 0 })
-        }))
+        Ok(self
+            .contents
+            .clone()
+            .unwrap_or_else(|| ClipboardContents::empty(ClipboardStamp { owner: 0, seq: 0 })))
     }
 
     fn write(&mut self, contents: &ClipboardContents) -> Result<()> {
@@ -320,6 +321,9 @@ mod tests {
         let mut contents = ClipboardContents::empty(ClipboardStamp { owner: 1, seq: 1 });
         contents.text = Some("hello".into());
         backend.clipboard.write(&contents).unwrap();
-        assert_eq!(backend.clipboard.read().unwrap().text.as_deref(), Some("hello"));
+        assert_eq!(
+            backend.clipboard.read().unwrap().text.as_deref(),
+            Some("hello")
+        );
     }
 }

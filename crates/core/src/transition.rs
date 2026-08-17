@@ -277,7 +277,7 @@ mod tests {
     fn a_diagonal_move_at_the_edge_slides_instead_of_sticking() {
         let mut r = pair();
         r.move_by(0, 500); // y = 1040, near the bottom
-        // Down-right past the bottom edge: y is refused, x still applies.
+                           // Down-right past the bottom edge: y is refused, x still applies.
         match r.move_by(50, 100) {
             Transition::Stay(l) => assert_eq!(l.local, Point::new(1010, 1040)),
             other => panic!("expected a slide, got {other:?}"),

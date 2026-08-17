@@ -184,16 +184,25 @@ pub enum MouseButton {
 pub enum InputEvent {
     /// Absolute position in the *receiving* machine's local coordinate space.
     /// The host translates before sending; clients never do layout maths.
-    MouseMove { x: i32, y: i32 },
+    MouseMove {
+        x: i32,
+        y: i32,
+    },
     /// Relative motion, used for pointer-locked contexts (games, 3D viewports)
     /// where absolute warping fights the application.
-    MouseMoveRelative { dx: i32, dy: i32 },
+    MouseMoveRelative {
+        dx: i32,
+        dy: i32,
+    },
     MouseButton {
         button: MouseButton,
         pressed: bool,
     },
     /// Scroll deltas in lines. Fractional to carry high-resolution trackpads.
-    MouseWheel { dx: f32, dy: f32 },
+    MouseWheel {
+        dx: f32,
+        dy: f32,
+    },
     Key {
         key: KeyCode,
         pressed: bool,

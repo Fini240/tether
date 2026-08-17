@@ -11,12 +11,73 @@ file transfer, and the arrangement UI are stubbed behind real interfaces. See
 [Implementation status](#implementation-status) for exactly what is and is not
 done.
 
-## Quick start
+## Install
+
+Downloads are on the [releases page](https://github.com/Fini240/tether/releases).
+Each release ships a macOS universal build (Apple Silicon and Intel in one
+binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
+`SHA256SUMS` file.
+
+> **While this repository is private, downloads need authentication.** GitHub
+> serves a 404 rather than a useful error to an unauthenticated request, so the
+> usual `curl | sh` one-liner will not work yet. Use the GitHub CLI route below
+> until the repo goes public.
+
+### macOS
+
+```sh
+gh auth login                 # once
+sh install.sh                 # picks the right build, verifies the checksum
+```
+
+Or drag `Tether.app` out of the `.dmg` into `/Applications`.
+
+Then grant the permission it cannot work without:
+
+**System Settings → Privacy & Security → Accessibility → +** and add
+`/usr/local/bin/tether` (or `Tether.app`).
+
+Two things that trip people up here, both macOS being macOS rather than bugs:
+
+- **A downloaded binary is quarantined.** Gatekeeper blocks it and the message
+  blames "an unidentified developer", which sends you looking in the wrong
+  place. `install.sh` clears the flag for you; if you unpacked by hand, run
+  `xattr -dr com.apple.quarantine /usr/local/bin/tether`. Releases are ad-hoc
+  signed, not notarised — that needs a paid Apple Developer ID.
+- **Injection fails silently without Accessibility.** No error, no dialog, just
+  nothing happening. Both roles check at startup and refuse to run rather than
+  let you conclude the network is broken.
+
+### Linux and Windows
+
+The binaries build and run, but **the native input backends are not implemented
+yet** — they start only with `--backend headless`, which is for testing the
+network and routing, not for actually sharing a keyboard. See
+[Implementation status](#implementation-status).
+
+### Run at login (macOS)
+
+```sh
+cp packaging/macos/dev.tether.daemon.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/dev.tether.daemon.plist
+```
+
+Edit the plist first to choose `host` or `client`. It is a LaunchAgent, not a
+LaunchDaemon, on purpose: a daemon runs with no window server session, where
+CoreGraphics reports zero displays and an event tap can never fire.
+
+## Build from source
 
 Needs Rust 1.82+.
 
 ```sh
 cargo build --release
+```
+
+To produce the release artifacts yourself:
+
+```sh
+packaging/macos/bundle.sh          # universal binary, Tether.app, .dmg
 ```
 
 Try it without a second computer — a host and a client in one terminal each,

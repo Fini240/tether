@@ -5,3 +5,6 @@
 # Local machine identity + paired-peer state. Never commit: contains the
 # private key this machine uses to authenticate to its peers.
 /.tether-state/
+
+# Release artifacts, rebuilt by packaging/macos/bundle.sh
+/dist/

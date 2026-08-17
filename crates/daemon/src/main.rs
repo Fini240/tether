@@ -29,7 +29,11 @@ impl From<BackendArg> for BackendKind {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "tether", version, about = "Share one keyboard and mouse across machines")]
+#[command(
+    name = "tether",
+    version,
+    about = "Share one keyboard and mouse across machines"
+)]
 struct Cli {
     /// Override the config file location.
     #[arg(long, global = true)]

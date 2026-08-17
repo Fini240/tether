@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
-use rustls::{ClientConfig, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme};
+use rustls::{
+    ClientConfig, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme,
+};
 use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 
 use crate::identity::Identity;

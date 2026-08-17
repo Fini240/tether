@@ -1,6 +1,8 @@
 //! The OS-facing traits every backend implements.
 
-use tether_proto::{ClipboardContents, InputEvent, KeyCode, Modifiers, MonitorInfo, MouseButton, Point};
+use tether_proto::{
+    ClipboardContents, InputEvent, KeyCode, Modifiers, MonitorInfo, MouseButton, Point,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 pub type Result<T> = std::result::Result<T, PlatformError>;

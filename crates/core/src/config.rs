@@ -306,9 +306,10 @@ mod tests {
             fingerprint: "ab".into(),
             last_address: None,
         });
-        config
-            .hotkeys
-            .bind("ctrl+alt+2".parse().unwrap(), Action::SwitchTo { machine: id });
+        config.hotkeys.bind(
+            "ctrl+alt+2".parse().unwrap(),
+            Action::SwitchTo { machine: id },
+        );
 
         config.remove_peer(id);
 

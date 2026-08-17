@@ -130,7 +130,10 @@ impl Drop for MacCapture {
     }
 }
 
-fn run_tap(shared: Arc<CaptureShared>, ready: std::sync::mpsc::Sender<std::result::Result<(), String>>) {
+fn run_tap(
+    shared: Arc<CaptureShared>,
+    ready: std::sync::mpsc::Sender<std::result::Result<(), String>>,
+) {
     let mask = event_mask(kCGEventMouseMoved)
         | event_mask(kCGEventLeftMouseDown)
         | event_mask(kCGEventLeftMouseUp)
@@ -204,9 +207,7 @@ extern "C" fn tap_callback(
 
     // macOS disables a tap whose callback ran long. Re-arm it rather than
     // going quietly deaf.
-    if event_type == kCGEventTapDisabledByTimeout
-        || event_type == kCGEventTapDisabledByUserInput
-    {
+    if event_type == kCGEventTapDisabledByTimeout || event_type == kCGEventTapDisabledByUserInput {
         let tap = shared.tap.load(Ordering::SeqCst);
         if !tap.is_null() {
             tracing::warn!("event tap was disabled by the system; re-enabling");
@@ -231,8 +232,12 @@ extern "C" fn tap_callback(
             Some(LocalEvent::MouseDelta { dx, dy })
         }
 
-        kCGEventLeftMouseDown | kCGEventLeftMouseUp | kCGEventRightMouseDown
-        | kCGEventRightMouseUp | kCGEventOtherMouseDown | kCGEventOtherMouseUp => {
+        kCGEventLeftMouseDown
+        | kCGEventLeftMouseUp
+        | kCGEventRightMouseDown
+        | kCGEventRightMouseUp
+        | kCGEventOtherMouseDown
+        | kCGEventOtherMouseUp => {
             let number = unsafe { CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber) };
             let button = match number {
                 0 => MouseButton::Left,

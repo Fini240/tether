@@ -160,7 +160,12 @@ pub async fn run(
         });
     }
 
-    tokio::spawn(accept_loop(listener, events_tx.clone(), config.clone(), identity.clone()));
+    tokio::spawn(accept_loop(
+        listener,
+        events_tx.clone(),
+        config.clone(),
+        identity.clone(),
+    ));
 
     let mut clients: HashMap<MachineId, Client> = HashMap::new();
     let mut heartbeat = tokio::time::interval(Duration::from_millis(
@@ -348,11 +353,8 @@ fn handle_event(
             // machine" works without opening a config file.
             assign_switch_hotkey(config, handle.machine);
 
-            let keymap = config.modifier_map_for(
-                handle.machine,
-                Platform::current(),
-                handle.platform,
-            );
+            let keymap =
+                config.modifier_map_for(handle.machine, Platform::current(), handle.platform);
             if !keymap.is_identity() {
                 tracing::info!(
                     machine = %handle.machine,
@@ -428,11 +430,7 @@ fn handle_local(
         }
 
         LocalEvent::Button { button, pressed } => {
-            forward_if_remote(
-                router,
-                clients,
-                InputEvent::MouseButton { button, pressed },
-            );
+            forward_if_remote(router, clients, InputEvent::MouseButton { button, pressed });
             Ok(())
         }
 
@@ -614,22 +612,18 @@ fn handle_client_frame(
                 // TODO(lazy-paste): pull immediately for now. Deferring until a
                 // paste actually happens needs paste detection per platform;
                 // until then a large image copy does cross the wire eagerly.
-                let _ = client
-                    .tx
-                    .send(Frame::ClipboardRequest { stamp, formats });
+                let _ = client.tx.send(Frame::ClipboardRequest { stamp, formats });
             }
         }
 
-        Frame::ClipboardRequest { .. } => {
-            match backend.clipboard.read() {
-                Ok(contents) => {
-                    if let Some(client) = clients.get(&machine) {
-                        let _ = client.tx.send(Frame::ClipboardData(contents));
-                    }
+        Frame::ClipboardRequest { .. } => match backend.clipboard.read() {
+            Ok(contents) => {
+                if let Some(client) = clients.get(&machine) {
+                    let _ = client.tx.send(Frame::ClipboardData(contents));
                 }
-                Err(err) => tracing::warn!(%err, "could not read the clipboard"),
             }
-        }
+            Err(err) => tracing::warn!(%err, "could not read the clipboard"),
+        },
 
         Frame::ClipboardData(contents) => {
             if !config.options.sync_clipboard {
@@ -800,11 +794,7 @@ fn assign_switch_hotkey(config: &mut Config, machine: MachineId) {
         let Ok(hotkey) = format!("ctrl+alt+{digit}").parse::<tether_core::hotkey::Hotkey>() else {
             continue;
         };
-        let taken = config
-            .hotkeys
-            .bindings
-            .iter()
-            .any(|b| b.hotkey == hotkey);
+        let taken = config.hotkeys.bindings.iter().any(|b| b.hotkey == hotkey);
         if !taken {
             config.hotkeys.bind(hotkey, Action::SwitchTo { machine });
             tracing::info!(%machine, hotkey = %hotkey, "bound a switch hotkey");

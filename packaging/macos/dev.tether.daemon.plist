@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent — starts Tether at login.
+
+  A LaunchAgent, deliberately, not a LaunchDaemon. A daemon runs in the system
+  context with no window server session, where CoreGraphics reports zero
+  displays and an event tap can never fire. Input sharing has to run as the
+  logged-in user.
+
+  Install:
+    cp packaging/macos/dev.tether.daemon.plist ~/Library/LaunchAgents/
+    # edit the role/arguments below to taste, then:
+    launchctl load  ~/Library/LaunchAgents/dev.tether.daemon.plist
+
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/dev.tether.daemon.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.tether.daemon</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/tether</string>
+		<!-- Change "client" to "host" on the machine with the keyboard and
+		     mouse. Pair both machines interactively once before enabling this;
+		     --pair must never be left on in an unattended service. -->
+		<string>client</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<!-- Restart if it exits unexpectedly, but not if it exited cleanly
+		     (a deliberate Ctrl-C or a fatal config error should stay stopped
+		     rather than spin). -->
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<!-- Back off between restarts so a misconfigured daemon cannot busy-loop. -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<key>StandardOutPath</key>
+	<string>/tmp/tether.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/tether.err.log</string>
+
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

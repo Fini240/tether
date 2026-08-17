@@ -175,7 +175,13 @@ pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredHost>> {
 fn sanitise_instance_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c == '.' || c.is_whitespace() { '-' } else { c })
+        .map(|c| {
+            if c == '.' || c.is_whitespace() {
+                '-'
+            } else {
+                c
+            }
+        })
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect();
 

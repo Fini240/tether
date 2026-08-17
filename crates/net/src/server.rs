@@ -63,9 +63,7 @@ impl Listener {
                 .peer_certificates()
                 .and_then(|certs| certs.first())
                 .map(|cert| fingerprint_of_der(cert))
-                .ok_or_else(|| {
-                    NetError::Identity("client presented no certificate".to_string())
-                })?
+                .ok_or_else(|| NetError::Identity("client presented no certificate".to_string()))?
         };
 
         Ok(Accepted {
