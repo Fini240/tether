@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::clipboard::{ClipFormat, ClipboardContents, ClipboardStamp};
-use crate::geometry::MonitorInfo;
+use crate::geometry::{MonitorInfo, Point};
 use crate::input::{InputEvent, SourceEvent};
 
 /// Which OS a peer runs. Drives the modifier remap and nothing else — no
@@ -68,6 +68,21 @@ pub struct Welcome {
     pub platform: Platform,
     /// Heartbeat cadence the host expects, in milliseconds.
     pub heartbeat_ms: u32,
+}
+
+/// One machine's place on the shared canvas, as the host sees it.
+///
+/// Sent to clients so they can show the arrangement too. A client has no say
+/// in it — the host owns the canvas — but a client that cannot display it
+/// leaves the user staring at a window showing only their own screen and no
+/// way to tell whether the other machine is even attached.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachinePlacement {
+    pub machine: u64,
+    pub name: String,
+    pub platform: Platform,
+    pub origin: Point,
+    pub monitors: Vec<MonitorInfo>,
 }
 
 /// An in-flight file transfer.
@@ -158,6 +173,9 @@ pub enum Frame {
         transfer: TransferId,
         reason: String,
     },
+
+    /// The whole canvas, pushed on every change.
+    Arrangement(Vec<MachinePlacement>),
 
     // ---- misc ----
     /// A client's displays changed (monitor plugged, resolution changed). The

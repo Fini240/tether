@@ -474,6 +474,7 @@ async fn session_once(
                         config,
                         &mut ownership,
                         identity.machine_id.0,
+                        status,
                     )
                     .await?
                 {
@@ -524,6 +525,7 @@ async fn apply<S>(
     config: &Config,
     ownership: &mut Ownership,
     my_machine: u64,
+    status: &Option<crate::control::StatusHandle>,
 ) -> Result<Option<Ended>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -536,6 +538,10 @@ where
             let _ = backend.pointer.warp(Point::new(x, y));
             ownership.cursor_here = true;
             ownership.apply(backend);
+            if let Some(status) = status {
+                let me = tether_core::layout::MachineId(my_machine);
+                status.update(|s| s.cursor_on = Some(me));
+            }
             tracing::debug!(x, y, "cursor entered this machine");
         }
 
@@ -545,12 +551,34 @@ where
             let _ = backend.inject.release_all();
             ownership.cursor_here = false;
             ownership.apply(backend);
+            if let Some(status) = status {
+                status.update(|s| s.cursor_on = None);
+            }
             tracing::debug!("cursor left this machine");
 
             if config.options.lock_screen_on_leave {
                 if let Err(err) = backend.lock.lock() {
                     tracing::warn!(%err, "could not lock the screen");
                 }
+            }
+        }
+
+        Frame::Arrangement(placements) => {
+            let layout = tether_core::layout::Layout {
+                machines: placements
+                    .into_iter()
+                    .map(|p| tether_core::layout::Placement {
+                        machine: tether_core::layout::MachineId(p.machine),
+                        name: p.name,
+                        platform: p.platform,
+                        origin: p.origin,
+                        monitors: p.monitors,
+                    })
+                    .collect(),
+            };
+            tracing::debug!(machines = layout.machines.len(), "arrangement received");
+            if let Some(status) = status {
+                status.update(|s| s.layout = layout.clone());
             }
         }
 
@@ -576,6 +604,10 @@ where
                 );
             }
             ownership.owns_input = mine;
+            if let Some(status) = status {
+                let owner = tether_core::layout::MachineId(machine);
+                status.update(|s| s.input_owner = Some(owner));
+            }
             // Whichever way it went, drop anything we were holding: a key held
             // as control moved would otherwise stay down on one side.
             let _ = backend.inject.release_all();

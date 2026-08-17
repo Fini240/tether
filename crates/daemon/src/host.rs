@@ -24,7 +24,9 @@ use tether_net::server::Listener;
 use tether_net::tls::TrustStore;
 use tether_net::Identity;
 use tether_platform::{Backend, BackendKind, LocalEvent};
-use tether_proto::{ClipboardContents, Frame, InputEvent, Platform, Point, SourceEvent};
+use tether_proto::{
+    ClipboardContents, Frame, InputEvent, MachinePlacement, Platform, Point, SourceEvent,
+};
 
 use crate::control::{Command, DaemonControl, PeerInfo};
 use crate::session;
@@ -73,8 +75,10 @@ struct Client {
     platform: Platform,
     address: String,
     tx: UnboundedSender<Frame>,
-    /// Modifier translation for this client, resolved once at join.
+    /// Modifier translation for events sent *to* this client.
     keymap: ModifierMap,
+    /// ...and for events arriving *from* it, when it is the one driving.
+    keymap_in: ModifierMap,
 }
 
 pub async fn run(
@@ -246,6 +250,7 @@ pub async fn run(
                         if let Err(err) = config.save(&options.config_path) {
                             tracing::warn!(%err, "could not save the arrangement");
                         }
+                        broadcast_arrangement(&clients, &router);
                     }
                     Command::JumpTo(machine) => {
                         let transition = router.jump_to(machine);
@@ -334,6 +339,30 @@ fn heartbeat_token() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Tell every client where all the screens are.
+///
+/// Clients have no say in the canvas — the host owns it — but without this a
+/// client's window shows only its own screen, with no way to tell whether the
+/// other machine is attached or where its edges lead.
+fn broadcast_arrangement(clients: &HashMap<MachineId, Client>, router: &CursorRouter) {
+    if clients.is_empty() {
+        return;
+    }
+    let placements: Vec<MachinePlacement> = router
+        .layout()
+        .machines
+        .iter()
+        .map(|p| MachinePlacement {
+            machine: p.machine.0,
+            name: p.name.clone(),
+            platform: p.platform,
+            origin: p.origin,
+            monitors: p.monitors.clone(),
+        })
+        .collect();
+    broadcast(clients, Frame::Arrangement(placements));
 }
 
 fn broadcast(clients: &HashMap<MachineId, Client>, frame: Frame) {
@@ -449,6 +478,9 @@ fn handle_event(
 
             let keymap =
                 config.modifier_map_for(handle.machine, Platform::current(), handle.platform);
+            // The reverse direction, for when this client is the one driving.
+            let keymap_in =
+                config.modifier_map_for(handle.machine, handle.platform, Platform::current());
             if !keymap.is_identity() {
                 tracing::info!(
                     machine = %handle.machine,
@@ -464,8 +496,10 @@ fn handle_event(
                     address: handle.address.clone(),
                     tx: handle.tx,
                     keymap,
+                    keymap_in,
                 },
             );
+            broadcast_arrangement(clients, router);
             Ok(())
         }
 
@@ -499,6 +533,7 @@ fn handle_event(
             layout.remove(machine);
             let had_cursor = router.active() == machine;
             router.set_layout(layout);
+            broadcast_arrangement(clients, router);
             if had_cursor {
                 reclaim_cursor(router, backend);
             }
@@ -643,9 +678,10 @@ fn handle_local(
         }
 
         LocalEvent::Button { button, pressed } => {
-            forward_if_remote(
+            deliver(
                 router,
                 clients,
+                backend,
                 InputEvent::MouseButton { button, pressed },
                 input_owner,
             );
@@ -653,9 +689,10 @@ fn handle_local(
         }
 
         LocalEvent::Wheel { dx, dy } => {
-            forward_if_remote(
+            deliver(
                 router,
                 clients,
+                backend,
                 InputEvent::MouseWheel { dx, dy },
                 input_owner,
             );
@@ -677,9 +714,10 @@ fn handle_local(
                 return Ok(());
             }
 
-            forward_if_remote(
+            deliver(
                 router,
                 clients,
+                backend,
                 InputEvent::Key {
                     key,
                     pressed,
@@ -693,12 +731,26 @@ fn handle_local(
     }
 }
 
-/// Send an event to the machine holding the cursor — unless that machine is
-/// the one being physically touched, in which case its own OS already
-/// delivered it and we are not suppressing there.
-fn forward_if_remote(
+/// Deliver an event to whichever machine holds the cursor.
+///
+/// Three cases, and getting the third wrong is what made a client-driven
+/// session look broken:
+///
+/// * the cursor is on the machine being physically touched — its own OS has
+///   already delivered the event, and we are not suppressing there, so
+///   injecting would double it;
+/// * the cursor is on a client — send it;
+/// * the cursor is on *this* machine while a client is driving — nothing local
+///   is producing these events, so this machine has to inject them itself.
+///
+/// That last case used to return early, left over from when the host was
+/// always the machine being touched. The symptom was a pointer that moved only
+/// at the moment it crossed onto the host and then sat still, which reads as
+/// severe lag rather than as nothing being delivered at all.
+fn deliver(
     router: &CursorRouter,
     clients: &HashMap<MachineId, Client>,
+    backend: &mut Backend,
     event: InputEvent,
     input_owner: MachineId,
 ) {
@@ -706,14 +758,25 @@ fn forward_if_remote(
     if active == input_owner {
         return;
     }
+
     if active == router.host() {
+        // Translate into this machine's terms on the way in — ⌘C from a Mac
+        // has to arrive here as Ctrl+C.
+        let event = match clients.get(&input_owner) {
+            Some(owner) => owner.keymap_in.remap_event(event),
+            None => event,
+        };
+        if let Err(err) = backend.inject.inject(&event) {
+            tracing::warn!(%err, "could not inject locally");
+        }
         return;
     }
+
     let Some(client) = clients.get(&active) else {
         return;
     };
-    // Remap on the way out. The wire carries the host's view; each client gets
-    // the translation appropriate to its own platform.
+    // Remap on the way out: each client gets the translation appropriate to
+    // its own platform.
     let translated = client.keymap.remap_event(event);
     let _ = client.tx.send(Frame::Input(translated));
 }
@@ -729,10 +792,19 @@ fn apply_transition(
         Transition::Blocked => {}
 
         Transition::Stay(located) => {
-            // The machine being touched moves its own cursor natively — we are
-            // not suppressing there, so injecting would double the motion.
-            // This is also what keeps a machine usable if the link drops.
-            if located.machine == input_owner || located.machine == router.host() {
+            // Only the machine being physically touched moves its own cursor
+            // natively; injecting there would double the motion, and leaving
+            // it alone is what keeps it usable if the link drops. Everywhere
+            // else — including this machine when a client is driving — has to
+            // be moved explicitly.
+            if located.machine == input_owner {
+                return;
+            }
+            if located.machine == router.host() {
+                let _ = backend.inject.inject(&InputEvent::MouseMove {
+                    x: located.local.x,
+                    y: located.local.y,
+                });
                 return;
             }
             send_move(clients, located);

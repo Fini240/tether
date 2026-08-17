@@ -15,7 +15,7 @@ pub use clipboard::{ClipFormat, ClipboardContents, ClipboardStamp};
 pub use codec::{Codec, CodecError};
 pub use geometry::{MonitorId, MonitorInfo, Point, Rect};
 pub use input::{InputEvent, KeyCode, Modifiers, MouseButton, SourceEvent};
-pub use message::{Frame, Hello, Platform, Welcome};
+pub use message::{Frame, Hello, MachinePlacement, Platform, Welcome};
 
 /// Bumped on any breaking change to the types in this crate. The host refuses
 /// clients that do not match, with a message naming both versions — a silent

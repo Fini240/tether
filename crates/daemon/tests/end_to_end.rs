@@ -364,3 +364,79 @@ async fn touching_the_host_takes_control_back() {
         harness.client_output.injected()
     );
 }
+
+/// A client driving, with the pointer on the host, must move the host's cursor.
+///
+/// This is the case the original routing missed. The host special-cased itself
+/// and returned early — correct only while the host was always the machine
+/// being touched. Once a client could take over, the host stopped injecting
+/// anything into itself: the pointer moved at the instant it crossed onto the
+/// host and then sat still until the next crossing, which reads as severe lag
+/// rather than as nothing arriving at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_can_drive_the_host() {
+    let harness = start("clientdrives").await;
+
+    // Hand control to the client by touching it. cursor_follows_input brings
+    // the pointer over to the client's screen.
+    let client_start = harness.client_output.cursor();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut took_over = false;
+    while tokio::time::Instant::now() < deadline {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: 40, dy: 40 });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if harness.client_output.cursor() != client_start {
+            took_over = true;
+            break;
+        }
+    }
+    assert!(took_over, "the client never took control");
+
+    harness.host_input.clear_injected();
+
+    // Now walk the pointer back onto the host — still driving from the client.
+    for _ in 0..6 {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: -400, dy: 0 });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    // ...and keep moving once it is there.
+    for _ in 0..4 {
+        harness
+            .client_output
+            .emit(LocalEvent::MouseDelta { dx: -20, dy: 10 });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+
+    let injected = harness.host_input.injected();
+    assert!(
+        injected
+            .iter()
+            .any(|e| matches!(e, InputEvent::MouseMove { .. })),
+        "the host was never told to move its own pointer while a client drove it: {injected:?}"
+    );
+
+    // Keystrokes have to arrive too, by the same path.
+    harness.host_input.clear_injected();
+    harness.client_output.emit(LocalEvent::Key {
+        key: KeyCode::Z,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+    });
+    let injected = wait_for(&harness.host_input, 1).await;
+    assert!(
+        injected.iter().any(|e| matches!(
+            e,
+            InputEvent::Key {
+                key: KeyCode::Z,
+                pressed: true,
+                ..
+            }
+        )),
+        "a keystroke from the driving client never reached the host: {injected:?}"
+    );
+}
