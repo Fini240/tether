@@ -69,10 +69,10 @@ fn main() {
     println!("other             : {other}");
     println!("total movement    : {moved}");
     println!("position first→last: {first:?} → {last:?}");
-    println!(
-        "own injections filtered: {}",
-        backend.capture.injected_filtered()
-    );
+    match backend.capture.injected_filtered() {
+        Some(count) => println!("own injections filtered: {count}"),
+        None => println!("own injections filtered: n/a (nothing to filter here)"),
+    }
 
     if let (Some(from), Some(to)) = (started_at, ended_at) {
         let drift = (to.x - from.x).abs() + (to.y - from.y).abs();

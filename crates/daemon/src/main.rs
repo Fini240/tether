@@ -485,21 +485,52 @@ fn run_doctor(kind: BackendKind) -> Result<()> {
     }
     std::thread::sleep(Duration::from_millis(400));
 
-    let filtered = backend.capture.injected_filtered() - before;
+    let after = backend.capture.injected_filtered();
     let leaked = std::iter::from_fn(|| rx.try_recv().ok()).count();
+
+    // Two ways to be right, and the difference is not a matter of degree.
+    //
+    // Backends that inject into the same stream they read must recognise their
+    // own events and drop them, and the count proves the filter ran. Backends
+    // that inject somewhere the capture side never looks — Linux, through its
+    // own uinput nodes — have no filter and no count, and asking for one would
+    // report a working machine as broken. What both must satisfy is that
+    // nothing came back, so that is the test they share.
+    let filtered = match (before, after) {
+        (Some(before), Some(after)) => Some(after.saturating_sub(before)),
+        _ => None,
+    };
 
     if kind == BackendKind::Headless {
         println!("Injection marking   n/a (headless backend injects nowhere)");
-    } else if filtered >= 5 && leaked == 0 {
-        println!("Injection marking   working ({filtered} of our own events filtered)");
+    } else if leaked > 0 {
+        println!("Injection marking   BROKEN ({leaked} events came back as local input)");
         println!();
-        println!("Automatic input handoff is safe to use on this machine.");
+        println!("Either this machine cannot tell its own injected input apart from");
+        println!("a hand on the keyboard — in which case two machines will fight over");
+        println!("which one is driving, and auto_input_handoff should be turned off —");
+        println!("or you touched the mouse or keyboard during the two seconds this");
+        println!("test takes. Run it again without touching anything to tell which.");
+    } else if let Some(filtered) = filtered {
+        if filtered >= 5 {
+            println!("Injection marking   working ({filtered} of our own events filtered)");
+            println!();
+            println!("Automatic input handoff is safe to use on this machine.");
+        } else {
+            println!("Injection marking   BROKEN (only {filtered} of 5 were recognised)");
+            println!();
+            println!("Nothing leaked through, but the filter did not see what it should");
+            println!("have. Injection may not be reaching this machine at all.");
+        }
     } else {
-        println!("Injection marking   BROKEN ({filtered} filtered, {leaked} leaked back)");
+        // No counter to read, and none needed: this backend injects through
+        // devices the capture side never opens, so "nothing came back" is the
+        // whole proof rather than a weaker version of one.
+        println!("Injection marking   n/a — nothing came back, which is the point");
         println!();
-        println!("Turn off auto_input_handoff in the config: without this filter,");
-        println!("two machines would each read the other's injected events as a");
-        println!("local touch and fight over which one is driving.");
+        println!("This machine injects through its own input devices, which it never");
+        println!("reads from, so there is no filter to check and nothing to leak.");
+        println!("Automatic input handoff is safe to use on this machine.");
     }
 
     backend.capture.stop();

@@ -184,8 +184,8 @@ impl InputCapture for WindowsCapture {
         }
     }
 
-    fn injected_filtered(&self) -> u64 {
-        self.shared.injected.load(Ordering::Relaxed)
+    fn injected_filtered(&self) -> Option<u64> {
+        Some(self.shared.injected.load(Ordering::Relaxed))
     }
 }
 

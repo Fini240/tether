@@ -807,17 +807,30 @@ fn run_doctor() -> String {
                         });
                     }
                     std::thread::sleep(std::time::Duration::from_millis(400));
-                    let filtered = backend.capture.injected_filtered() - before;
+                    let after = backend.capture.injected_filtered();
                     backend.capture.stop();
 
-                    if filtered >= 5 {
-                        let _ = writeln!(out, "handoff     safe ({filtered} filtered)");
-                    } else {
-                        let _ = writeln!(
-                            out,
-                            "handoff     BROKEN ({filtered} filtered)\n\
-                                         turn off \"follow the keyboard I touch\""
-                        );
+                    // `None` from either end means this backend has no filter
+                    // to count, because it injects through devices it never
+                    // reads — which is a stronger separation, not a missing
+                    // one. Only a backend that *does* count gets judged on the
+                    // number.
+                    match (before, after) {
+                        (Some(before), Some(after)) => {
+                            let filtered = after.saturating_sub(before);
+                            if filtered >= 5 {
+                                let _ = writeln!(out, "handoff     safe ({filtered} filtered)");
+                            } else {
+                                let _ = writeln!(
+                                    out,
+                                    "handoff     BROKEN ({filtered} filtered)\n\
+                                                 turn off \"follow the keyboard I touch\""
+                                );
+                            }
+                        }
+                        _ => {
+                            let _ = writeln!(out, "handoff     safe (separate input devices)");
+                        }
                     }
                 }
                 Err(err) => {

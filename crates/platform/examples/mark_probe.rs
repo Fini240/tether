@@ -70,14 +70,14 @@ fn main() {
 
     let mut leaks = 0;
     for (name, event) in cases {
-        let before = backend.capture.injected_filtered();
+        let before = backend.capture.injected_filtered().unwrap_or(0);
         if let Err(err) = backend.inject.inject(&event) {
             println!("{name:<18} {:>8}  inject failed: {err}", "-");
             continue;
         }
         std::thread::sleep(Duration::from_millis(250));
 
-        let filtered = backend.capture.injected_filtered() - before;
+        let filtered = backend.capture.injected_filtered().unwrap_or(0) - before;
         let mut leaked = Vec::new();
         while let Ok(local) = rx.try_recv() {
             leaked.push(match local {

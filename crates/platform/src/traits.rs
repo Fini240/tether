@@ -98,14 +98,22 @@ pub trait InputCapture: Send {
     fn set_swallow(&self, swallow: bool);
 
     /// How many events this backend recognised as its own injections and
-    /// dropped rather than reporting as user input.
+    /// dropped rather than reporting as user input, or `None` where the
+    /// question does not apply.
     ///
-    /// Exists because that filter is load-bearing for input handoff: without
-    /// it, a machine being driven remotely sees the injected events as somebody
-    /// touching its keyboard and immediately grabs control back. `tether doctor`
-    /// reads this to prove the filter works before you rely on it.
-    fn injected_filtered(&self) -> u64 {
-        0
+    /// Load-bearing for input handoff: without such a filter, a machine being
+    /// driven remotely sees the injected events as somebody touching its
+    /// keyboard and immediately grabs control back. `tether doctor` reads this
+    /// to prove it works before anyone relies on it.
+    ///
+    /// `None` is not a failure and not an unimplemented stub. It means this
+    /// backend achieves the same separation structurally rather than by
+    /// recognising and dropping events — Linux injects through its own uinput
+    /// device nodes, which the capture side never opens, so there is nothing
+    /// to count and nothing that could be counted. The proof there is that no
+    /// injected event comes back at all, which `doctor` checks directly.
+    fn injected_filtered(&self) -> Option<u64> {
+        None
     }
 }
 

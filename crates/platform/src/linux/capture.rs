@@ -142,12 +142,13 @@ impl InputCapture for LinuxCapture {
         self.shared.swallow.store(swallow, Ordering::SeqCst);
     }
 
-    fn injected_filtered(&self) -> u64 {
-        // Nothing to filter, and nothing to prove: our own injections come out
-        // of device nodes this side never opens, so they cannot be read back.
-        // Reporting zero here is honest — `doctor` treats it as "not
-        // applicable" rather than as a broken filter.
-        0
+    fn injected_filtered(&self) -> Option<u64> {
+        // Nothing to count. Our injections come out of uinput nodes this side
+        // never opens, so there is no event here to recognise and drop — the
+        // separation is structural rather than a filter. `None` says exactly
+        // that; a zero would read as "the filter caught nothing", which is the
+        // one thing that would mean it was broken.
+        None
     }
 }
 
