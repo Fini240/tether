@@ -1,6 +1,6 @@
 //! `tether` — the daemon binary. Runs as a host or as a client.
 
-use tether_daemon::{clientmode, host};
+use tether_daemon::{auto, clientmode, host};
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -52,6 +52,24 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Join the network: find the other machines and be reachable from them.
+    ///
+    /// No role to pick. Every machine running this finds the others, one of
+    /// them quietly takes on arbitrating the shared pointer, and input flows
+    /// whichever way you move it. `host` and `client` are still there for
+    /// pinning it down by hand.
+    Run {
+        /// Address to listen on while this machine is the one arbitrating.
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: String,
+        #[arg(long)]
+        port: Option<u16>,
+        /// Accept machines that have never paired with this one. Leave it off
+        /// once your machines are set up.
+        #[arg(long)]
+        pair: bool,
+    },
+
     /// Run as the host: own the keyboard and mouse, drive everyone else.
     Host {
         /// Address to listen on.
@@ -167,10 +185,29 @@ async fn run(cli: Cli) -> Result<()> {
         .context("could not load or create this machine's identity")?;
 
     match cli.command {
+        Command::Run { bind, port, pair } => {
+            config.role = Role::Auto;
+            let port = port.unwrap_or(config.port);
+            let mut backend = tether_platform::Backend::new(cli.backend.into())?;
+            auto::run(
+                auto::Options {
+                    bind,
+                    port,
+                    pairing: pair,
+                    config_path,
+                    control: None,
+                },
+                config,
+                identity,
+                &mut backend,
+            )
+            .await
+        }
+
         Command::Host { bind, port, pair } => {
             config.role = Role::Host;
             let port = port.unwrap_or(config.port);
-            let backend = tether_platform::Backend::new(cli.backend.into())?;
+            let mut backend = tether_platform::Backend::new(cli.backend.into())?;
             host::run(
                 host::Options {
                     bind: format!("{bind}:{port}"),
@@ -179,29 +216,33 @@ async fn run(cli: Cli) -> Result<()> {
                     advertise: true,
                     ready: None,
                     control: None,
+                    supersede: None,
                 },
                 config,
                 identity,
-                backend,
+                &mut backend,
             )
             .await
+            .map(|_| ())
         }
 
         Command::Client { host: addr, pair } => {
             config.role = Role::Client;
-            let backend = tether_platform::Backend::new(cli.backend.into())?;
+            let mut backend = tether_platform::Backend::new(cli.backend.into())?;
             clientmode::run(
                 clientmode::Options {
                     address: addr.or_else(|| config.address.clone()),
                     pairing: pair,
                     config_path,
                     control: None,
+                    auto: false,
                 },
                 config,
                 identity,
-                backend,
+                &mut backend,
             )
             .await
+            .map(|_| ())
         }
 
         Command::Discover { seconds } => {

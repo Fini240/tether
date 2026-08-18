@@ -35,6 +35,14 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Work it out from who else is on the network, and change if the answer
+    /// changes. What a machine that was simply switched on should do.
+    ///
+    /// There is still exactly one arbiter — one shared pointer needs one
+    /// authority on where it is, or two machines both believe they are driving
+    /// and it tears — but which machine that is stops being anybody's
+    /// decision. See `daemon::auto`.
+    Auto,
     /// Owns the physical keyboard and mouse.
     Host,
     /// Receives input from a host.
@@ -126,7 +134,7 @@ impl Default for Config {
         Self {
             version: 1,
             name: default_machine_name(),
-            role: Role::Client,
+            role: Role::Auto,
             address: None,
             port: tether_proto::DEFAULT_PORT,
             layout: Layout::new(),

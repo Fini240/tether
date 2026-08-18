@@ -21,6 +21,7 @@ use tether_proto::{Frame, Point, SourceEvent};
 
 use crate::control::{Command, DaemonControl, PeerInfo};
 use crate::session;
+use crate::Outcome;
 
 pub struct Options {
     pub address: Option<String>,
@@ -28,6 +29,15 @@ pub struct Options {
     pub config_path: PathBuf,
     /// Publishes status and receives commands. `None` when run from the CLI.
     pub control: Option<DaemonControl>,
+    /// Give up and hand back rather than retrying forever when there is no
+    /// host to be found.
+    ///
+    /// A client the user asked for keeps waiting: they said this machine is a
+    /// client, so the host is presumably coming back. Under `auto`, nothing
+    /// answering means nobody is arbitrating, and the right move is to do it
+    /// ourselves rather than sit waiting for a machine that may be switched
+    /// off for the night.
+    pub auto: bool,
 }
 
 /// What this client believes about who is driving and where the cursor is.
@@ -137,8 +147,8 @@ pub async fn run(
     mut options: Options,
     mut config: Config,
     identity: Identity,
-    mut backend: Backend,
-) -> Result<()> {
+    backend: &mut Backend,
+) -> Result<Outcome> {
     let control = options.control.take();
     let (status, mut commands) = match control {
         Some(control) => (Some(control.status), Some(control.commands)),
@@ -195,6 +205,10 @@ pub async fn run(
     loop {
         let candidates = resolve_addresses(&options, &config).await;
         if candidates.is_empty() {
+            if options.auto {
+                tracing::info!("nothing is arbitrating on this network; taking it on");
+                return Ok(Outcome::Supersede);
+            }
             tracing::warn!("no host found; retrying");
             tokio::time::sleep(backoff.next_delay()).await;
             continue;
@@ -256,7 +270,7 @@ pub async fn run(
             &mut config,
             &identity,
             &trust,
-            &mut backend,
+            backend,
             &monitors,
             &options,
             &mut input_rx,
@@ -294,7 +308,7 @@ pub async fn run(
         // input suppressed just because the link dropped mid-session.
         let _ = backend.inject.release_all();
         backend.capture.set_swallow(false);
-        pin(&backend, false);
+        pin(backend, false);
         let _ = backend.pointer.set_visible(true);
 
         let delay = backoff.next_delay();
@@ -304,7 +318,7 @@ pub async fn run(
 
     let _ = backend.inject.release_all();
     backend.capture.set_swallow(false);
-    pin(&backend, false);
+    pin(backend, false);
     let _ = backend.pointer.set_visible(true);
     backend.capture.stop();
     config.save(&options.config_path).ok();
@@ -315,7 +329,7 @@ pub async fn run(
             s.detail = "stopped".into();
         });
     }
-    Ok(())
+    Ok(Outcome::Stopped)
 }
 
 /// Await the next command, or never, when nothing is driving this session.
@@ -535,7 +549,12 @@ async fn session_once(
                     }
                     // Ask; do not assume. The host arbitrates, and it replies
                     // with InputOwner — which is what actually flips us over.
-                    tracing::debug!("local input detected; claiming control");
+                    // With the event: "something local happened" is not
+                    // enough to debug a machine that grabs control when it
+                    // should not. Which kind, and how big, is the whole
+                    // question — a stray one-pixel drift and a real keypress
+                    // read identically in a log that only says "input".
+                    tracing::debug!(?event, "local input detected; claiming control");
                     connection.send(Frame::ClaimInput).await?;
                 }
                 connection.send(Frame::SourceInput(to_source(event))).await?;

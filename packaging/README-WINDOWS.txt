@@ -31,7 +31,7 @@ screen edge leads where.
 Windows will ask about the network
 ----------------------------------
 
-The first time you start a host, Windows Defender Firewall asks whether to
+The first time this machine arbitrates, Windows Defender Firewall asks whether to
 allow it. Say yes for private networks. Without that, no other machine can
 reach it.
 

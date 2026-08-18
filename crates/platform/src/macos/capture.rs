@@ -354,9 +354,40 @@ extern "C" fn tap_callback(
     };
 
     if let Some(local) = local {
+        // Anything that reaches here is, as far as this machine can tell,
+        // somebody's hand — it is unmarked, so it is not ours. When it is big
+        // enough to take control away from whoever is driving, say where it
+        // came from: pid 0 is real hardware, our own pid means an injection
+        // that lost its mark, and anything else is another program moving the
+        // pointer. Guessing between those three from the outside is hopeless.
+        if claims_control(&local) {
+            let pid = unsafe { CGEventGetIntegerValueField(event, kCGEventSourceUnixProcessID) };
+            tracing::debug!(
+                pid,
+                ours = pid == std::process::id() as i64,
+                hardware = pid == 0,
+                ?local,
+                "unmarked input that is enough to claim control"
+            );
+        }
         shared.emit(local);
     }
     pass_through(shared, event)
+}
+
+/// Would this be enough for the daemon to hand control to this machine?
+///
+/// Mirrors `is_deliberate` in the daemon. Kept in step by hand: this one only
+/// decides whether a line is worth logging, so drift costs a confusing debug
+/// session rather than wrong behaviour.
+fn claims_control(local: &LocalEvent) -> bool {
+    match local {
+        LocalEvent::Key { pressed, .. } | LocalEvent::Button { pressed, .. } => *pressed,
+        LocalEvent::MouseDelta { dx, dy } | LocalEvent::MouseMoved { dx, dy, .. } => {
+            dx.abs() + dy.abs() >= 3
+        }
+        LocalEvent::Wheel { dx, dy } => dx.abs() + dy.abs() >= 1.0,
+    }
 }
 
 /// Returning NULL drops the event; returning it delivers it locally.

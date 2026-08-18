@@ -146,8 +146,11 @@ Before it can capture or inject input, grant it Accessibility:
   System Settings -> Privacy & Security -> Accessibility -> +
   and choose /usr/local/bin/tether
 
-Then, on the machine with the keyboard and mouse:   tether host --pair
-and on every other machine:                          tether client --pair
-Compare the fingerprints, then restart both without --pair.
+Then run this on every machine — there is no host to pick, they sort it
+out between themselves:
+
+  tether run --pair
+
+Compare the fingerprints, then restart them without --pair.
 EOF
 fi

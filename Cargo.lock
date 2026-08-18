@@ -3317,7 +3317,7 @@ dependencies = [
 
 [[package]]
 name = "tether-core"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "tether-daemon"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "tether-gui"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3363,7 +3363,7 @@ dependencies = [
 
 [[package]]
 name = "tether-net"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -3384,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "tether-platform"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "libc",
@@ -3398,7 +3398,7 @@ dependencies = [
 
 [[package]]
 name = "tether-proto"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "bincode",
  "bytes",

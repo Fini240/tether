@@ -22,6 +22,9 @@ const TXT_FINGERPRINT: &str = "fp";
 const TXT_NAME: &str = "name";
 const TXT_PLATFORM: &str = "os";
 const TXT_VERSION: &str = "v";
+/// The advertiser's machine id. Present from 0.4.0; absent on older peers,
+/// which is why every use of it treats `None` as "cannot be elected against".
+const TXT_MACHINE_ID: &str = "id";
 
 /// A host found on the network.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +36,13 @@ pub struct DiscoveredHost {
     pub fingerprint: Option<String>,
     pub platform: Option<String>,
     pub protocol_version: Option<u16>,
+    /// The advertiser's stable machine id, when it published one.
+    ///
+    /// This is what decides which machine arbitrates when nobody has been
+    /// told: the lowest id wins, so two machines reach the same answer without
+    /// negotiating. `None` means a peer too old to play, and it is left to be
+    /// the host rather than argued with.
+    pub machine_id: Option<u64>,
 }
 
 impl DiscoveredHost {
@@ -102,6 +112,7 @@ impl Advertiser {
         port: u16,
         fingerprint: &str,
         platform: &str,
+        machine_id: u64,
     ) -> Result<Advertiser> {
         let daemon = ServiceDaemon::new()
             .map_err(|e| NetError::Discovery(format!("could not start mDNS: {e}")))?;
@@ -114,6 +125,7 @@ impl Advertiser {
             TXT_VERSION.to_string(),
             tether_proto::PROTOCOL_VERSION.to_string(),
         );
+        properties.insert(TXT_MACHINE_ID.to_string(), machine_id.to_string());
 
         // Instance names may not contain dots — they would be read as extra
         // DNS labels. Hostnames like "narf.local" are common, so sanitise.
@@ -211,6 +223,9 @@ pub async fn browse(timeout: Duration) -> Result<Vec<DiscoveredHost>> {
                     protocol_version: info
                         .get_property_val_str(TXT_VERSION)
                         .and_then(|v| v.parse().ok()),
+                    machine_id: info
+                        .get_property_val_str(TXT_MACHINE_ID)
+                        .and_then(|v| v.parse().ok()),
                 };
                 if !found.iter().any(|h| h.fingerprint == host.fingerprint) {
                     found.push(host);
@@ -277,6 +292,7 @@ mod tests {
         // stopping there looks exactly like "the machines cannot see each
         // other", when discovery worked perfectly.
         let host = DiscoveredHost {
+            machine_id: None,
             name: "pc".into(),
             addresses: vec![
                 "2003:e5:4743:d300::1".parse().unwrap(),
@@ -313,6 +329,7 @@ mod tests {
     #[test]
     fn a_discovered_host_formats_v4_and_v6_addresses() {
         let mut host = DiscoveredHost {
+            machine_id: None,
             name: "n".into(),
             addresses: vec!["192.168.1.5".parse().unwrap()],
             port: 24800,

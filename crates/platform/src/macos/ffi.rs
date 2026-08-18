@@ -93,6 +93,10 @@ pub const kCGKeyboardEventAutorepeat: u32 = 8;
 pub const kCGKeyboardEventKeycode: u32 = 9;
 pub const kCGScrollWheelEventDeltaAxis1: u32 = 11;
 pub const kCGScrollWheelEventDeltaAxis2: u32 = 12;
+/// The pid of the process that posted the event, or 0 for something that came
+/// off real hardware. Diagnostic only: it answers "who moved the cursor" —
+/// a hand, us, or some other program.
+pub const kCGEventSourceUnixProcessID: u32 = 41;
 /// Free-form 64 bits that ride along with an event and survive a round trip
 /// through an event tap. Used to label our own injections.
 pub const kCGEventSourceUserData: u32 = 42;

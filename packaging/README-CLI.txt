@@ -40,16 +40,19 @@ and no error is shown:
 Use it
 ------
 
-On the machine with the keyboard and mouse:
+On every machine:
 
-    tether host --pair
+    tether run --pair
 
-On every other machine:
+There is no host to nominate: the machines find each other and work out
+between themselves which one arbitrates. Whichever keyboard you touch
+drives, whichever way you push the pointer.
 
-    tether client --pair
+Each prints a fingerprint. Check they match, then restart them without
+--pair — from then on only those exact machines are accepted.
 
-Both print a fingerprint. Check they match, then restart both without --pair —
-from then on only those exact machines are accepted.
+If discovery cannot work — different subnets, or mDNS blocked — pin it
+down by hand instead with "tether host" and "tether client --host IP".
 
 Then say where your screens actually are:
 

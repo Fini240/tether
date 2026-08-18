@@ -83,38 +83,41 @@ async fn start(tag: &str) -> Harness {
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
-    tokio::spawn(host::run(
-        host::Options {
-            // Port 0: the OS picks a free one and `ready` reports it back, so
-            // concurrent test runs cannot collide on a fixed port.
-            bind: "127.0.0.1:0".into(),
-            pairing: true,
-            config_path: dir.join("host-config.json"),
-            advertise: false,
-            ready: Some(ready_tx),
-            control: None,
-        },
-        host_config,
-        host_identity,
-        host_backend,
-    ));
+    // The backend lives inside the task rather than outside it: the roles
+    // borrow it now, so that a supervisor can pass the same one to whichever
+    // role the network calls for, and a borrow cannot outlive a spawn.
+    let host_options = host::Options {
+        // Port 0: the OS picks a free one and `ready` reports it back, so
+        // concurrent test runs cannot collide on a fixed port.
+        bind: "127.0.0.1:0".into(),
+        pairing: true,
+        config_path: dir.join("host-config.json"),
+        advertise: false,
+        ready: Some(ready_tx),
+        control: None,
+        supersede: None,
+    };
+    tokio::spawn(async move {
+        let mut backend = host_backend;
+        host::run(host_options, host_config, host_identity, &mut backend).await
+    });
 
     let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
         .await
         .expect("host did not start listening in time")
         .expect("host dropped the ready channel");
 
-    tokio::spawn(clientmode::run(
-        clientmode::Options {
-            address: Some(addr.to_string()),
-            pairing: true,
-            config_path: dir.join("client-config.json"),
-            control: None,
-        },
-        client_config,
-        client_identity,
-        client_backend,
-    ));
+    let client_options = clientmode::Options {
+        address: Some(addr.to_string()),
+        pairing: true,
+        config_path: dir.join("client-config.json"),
+        control: None,
+        auto: false,
+    };
+    tokio::spawn(async move {
+        let mut backend = client_backend;
+        clientmode::run(client_options, client_config, client_identity, &mut backend).await
+    });
 
     Harness {
         host_input,
@@ -698,22 +701,28 @@ async fn a_connected_client_stops_when_asked() {
     )]);
 
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(host::run(
-        host::Options {
-            bind: "127.0.0.1:0".into(),
-            pairing: true,
-            config_path: dir.join("host.json"),
-            advertise: false,
-            ready: Some(ready_tx),
-            control: None,
-        },
-        Config {
-            name: "stop-host".into(),
-            ..Config::default()
-        },
-        Identity::generate().unwrap(),
-        host_backend,
-    ));
+    let host_options = host::Options {
+        bind: "127.0.0.1:0".into(),
+        pairing: true,
+        config_path: dir.join("host.json"),
+        advertise: false,
+        ready: Some(ready_tx),
+        control: None,
+        supersede: None,
+    };
+    tokio::spawn(async move {
+        let mut backend = host_backend;
+        host::run(
+            host_options,
+            Config {
+                name: "stop-host".into(),
+                ..Config::default()
+            },
+            Identity::generate().unwrap(),
+            &mut backend,
+        )
+        .await
+    });
 
     let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
         .await
@@ -721,20 +730,26 @@ async fn a_connected_client_stops_when_asked() {
         .expect("ready channel dropped");
 
     let (daemon, ui) = control::channel();
-    let client = tokio::spawn(clientmode::run(
-        clientmode::Options {
-            address: Some(addr.to_string()),
-            pairing: true,
-            config_path: dir.join("client.json"),
-            control: Some(daemon),
-        },
-        Config {
-            name: "stop-client".into(),
-            ..Config::default()
-        },
-        Identity::generate().unwrap(),
-        client_backend,
-    ));
+    let client_options = clientmode::Options {
+        address: Some(addr.to_string()),
+        pairing: true,
+        config_path: dir.join("client.json"),
+        control: Some(daemon),
+        auto: false,
+    };
+    let client = tokio::spawn(async move {
+        let mut backend = client_backend;
+        clientmode::run(
+            client_options,
+            Config {
+                name: "stop-client".into(),
+                ..Config::default()
+            },
+            Identity::generate().unwrap(),
+            &mut backend,
+        )
+        .await
+    });
 
     // Wait until it is genuinely connected — stopping a client that never got
     // anywhere would pass for the wrong reason.
@@ -763,4 +778,137 @@ async fn a_connected_client_stops_when_asked() {
         .unwrap()
         .expect("client task panicked")
         .expect("client returned an error");
+}
+
+/// Standing down is for machines nobody is relying on.
+///
+/// The election has to be able to change its mind — two machines switched on
+/// together each briefly believe they are alone, and one of them has to give
+/// way once it sees the other. But a machine that already has somebody
+/// connected to it cannot: handing over means dropping their session, and a
+/// keyboard that dies because a third machine appeared is worse than an
+/// arbiter that is not the lowest-numbered one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_arbiter_stands_down_when_outranked() {
+    let dir = TempDir::new("stand-down");
+    let (backend, _handle) =
+        backend_with(vec![fake_monitor(0, 0, 0, HOST_WIDTH, HOST_HEIGHT, true)]);
+
+    let (supersede_tx, supersede_rx) = tokio::sync::watch::channel(false);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let options = host::Options {
+        bind: "127.0.0.1:0".into(),
+        pairing: true,
+        config_path: dir.join("host.json"),
+        advertise: false,
+        ready: Some(ready_tx),
+        control: None,
+        supersede: Some(supersede_rx),
+    };
+    let running = tokio::spawn(async move {
+        let mut backend = backend;
+        host::run(
+            options,
+            Config {
+                name: "lonely".into(),
+                ..Config::default()
+            },
+            Identity::generate().unwrap(),
+            &mut backend,
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("host did not listen")
+        .expect("ready channel dropped");
+
+    supersede_tx.send(true).expect("nobody listening");
+
+    let outcome = tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("an idle host ignored a stronger claim and kept arbitrating")
+        .expect("host task panicked")
+        .expect("host returned an error");
+    assert_eq!(outcome, tether_daemon::Outcome::Supersede);
+}
+
+/// The other half of the rule: with a client connected, being outranked is
+/// noted and ignored until the client has gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_arbiter_with_a_client_keeps_the_job() {
+    let dir = TempDir::new("keep-job");
+    let (host_backend, _host_handle) =
+        backend_with(vec![fake_monitor(0, 0, 0, HOST_WIDTH, HOST_HEIGHT, true)]);
+    let (client_backend, _client_handle) = backend_with(vec![fake_monitor(
+        0,
+        0,
+        0,
+        CLIENT_WIDTH,
+        CLIENT_HEIGHT,
+        true,
+    )]);
+
+    let (supersede_tx, supersede_rx) = tokio::sync::watch::channel(false);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let host_options = host::Options {
+        bind: "127.0.0.1:0".into(),
+        pairing: true,
+        config_path: dir.join("host.json"),
+        advertise: false,
+        ready: Some(ready_tx),
+        control: None,
+        supersede: Some(supersede_rx),
+    };
+    let running = tokio::spawn(async move {
+        let mut backend = host_backend;
+        host::run(
+            host_options,
+            Config {
+                name: "busy".into(),
+                ..Config::default()
+            },
+            Identity::generate().unwrap(),
+            &mut backend,
+        )
+        .await
+    });
+
+    let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
+        .await
+        .expect("host did not listen")
+        .expect("ready channel dropped");
+
+    let client_options = clientmode::Options {
+        address: Some(addr.to_string()),
+        pairing: true,
+        config_path: dir.join("client.json"),
+        control: None,
+        auto: false,
+    };
+    tokio::spawn(async move {
+        let mut backend = client_backend;
+        clientmode::run(
+            client_options,
+            Config {
+                name: "relying-on-it".into(),
+                ..Config::default()
+            },
+            Identity::generate().unwrap(),
+            &mut backend,
+        )
+        .await
+    });
+
+    // Let the client actually finish its handshake; superseding a host that
+    // has not accepted anybody yet would pass for the wrong reason.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    supersede_tx.send(true).expect("nobody listening");
+
+    let still_running = tokio::time::timeout(Duration::from_secs(3), running).await;
+    assert!(
+        still_running.is_err(),
+        "the host dropped a connected client to hand over the arbiter role"
+    );
 }

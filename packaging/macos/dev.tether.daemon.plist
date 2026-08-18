@@ -24,10 +24,11 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/bin/tether</string>
-		<!-- Change "client" to "host" on the machine with the keyboard and
-		     mouse. Pair both machines interactively once before enabling this;
-		     --pair must never be left on in an unattended service. -->
-		<string>client</string>
+		<!-- The same on every machine: they find each other and work out
+		     between themselves which one arbitrates. Pair both machines
+		     interactively once before enabling this; --pair must never be left
+		     on in an unattended service. -->
+		<string>run</string>
 	</array>
 
 	<key>RunAtLoad</key>

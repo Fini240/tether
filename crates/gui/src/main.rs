@@ -20,7 +20,7 @@ use eframe::egui;
 use tether_core::config::{Config, Role};
 use tether_core::layout::MachineId;
 use tether_daemon::control::{self, Command, Status, UiControl};
-use tether_daemon::{clientmode, host};
+use tether_daemon::{auto, clientmode, host};
 use tether_net::Identity;
 use tether_platform::BackendKind;
 
@@ -179,38 +179,53 @@ impl TetherApp {
 
                 let status = daemon.status.clone();
                 let result = runtime.block_on(async move {
-                    let backend = tether_platform::Backend::new(BackendKind::Native)?;
+                    let mut backend = tether_platform::Backend::new(BackendKind::Native)?;
                     match role {
-                        Role::Host => {
-                            host::run(
-                                host::Options {
-                                    bind: format!("0.0.0.0:{port}"),
-                                    pairing,
-                                    config_path,
-                                    advertise: true,
-                                    ready: None,
-                                    control: Some(daemon),
-                                },
-                                config,
-                                identity,
-                                backend,
-                            )
-                            .await
-                        }
-                        Role::Client => {
-                            clientmode::run(
-                                clientmode::Options {
-                                    address,
+                        Role::Auto => {
+                            auto::run(
+                                auto::Options {
+                                    bind: "0.0.0.0".to_string(),
+                                    port,
                                     pairing,
                                     config_path,
                                     control: Some(daemon),
                                 },
                                 config,
                                 identity,
-                                backend,
+                                &mut backend,
                             )
                             .await
                         }
+                        Role::Host => host::run(
+                            host::Options {
+                                bind: format!("0.0.0.0:{port}"),
+                                pairing,
+                                config_path,
+                                advertise: true,
+                                ready: None,
+                                control: Some(daemon),
+                                supersede: None,
+                            },
+                            config,
+                            identity,
+                            &mut backend,
+                        )
+                        .await
+                        .map(|_| ()),
+                        Role::Client => clientmode::run(
+                            clientmode::Options {
+                                address,
+                                pairing,
+                                config_path,
+                                control: Some(daemon),
+                                auto: false,
+                            },
+                            config,
+                            identity,
+                            &mut backend,
+                        )
+                        .await
+                        .map(|_| ()),
                     }
                 });
 
@@ -370,6 +385,7 @@ impl TetherApp {
                 (Some(session), true) => (
                     egui::Color32::from_rgb(52, 199, 89),
                     match session.role {
+                        Role::Auto => "Connected — any keyboard drives".to_string(),
                         Role::Host => "Host — this keyboard drives".to_string(),
                         Role::Client => "Client".to_string(),
                     },
@@ -470,27 +486,53 @@ impl TetherApp {
                 );
             ui.add_space(4.0);
 
+            // One button, because there is one thing anybody wants: turn it
+            // on and have the machines find each other. Which of them ends up
+            // arbitrating the shared pointer is not a decision worth putting
+            // in front of somebody — it is worked out from the network, and it
+            // changes by itself when the network does.
             if ui
-                .add_sized(
-                    [ui.available_width(), 32.0],
-                    egui::Button::new("Start as Host"),
+                .add_sized([ui.available_width(), 36.0], egui::Button::new("Connect"))
+                .on_hover_text(
+                    "Find the other machines and be reachable from them. Whichever \
+                     keyboard you touch drives, and the pointer crosses either way.",
                 )
-                .on_hover_text("This machine's keyboard and mouse drive the others.")
                 .clicked()
             {
-                self.start(Role::Host);
+                self.start(Role::Auto);
             }
-            ui.add_space(4.0);
-            if ui
-                .add_sized(
-                    [ui.available_width(), 32.0],
-                    egui::Button::new("Start as Client"),
-                )
-                .on_hover_text("Receive input from a host on this network.")
-                .clicked()
-            {
-                self.start(Role::Client);
-            }
+
+            ui.add_space(8.0);
+            egui::CollapsingHeader::new("Pin the roles by hand")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(
+                        "Only needed when discovery cannot work — machines on \
+                         different subnets, or mDNS blocked.",
+                    );
+                    ui.add_space(4.0);
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::Button::new("Start as Host"),
+                        )
+                        .on_hover_text("This machine's keyboard and mouse drive the others.")
+                        .clicked()
+                    {
+                        self.start(Role::Host);
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::Button::new("Start as Client"),
+                        )
+                        .on_hover_text("Receive input from a host on this network.")
+                        .clicked()
+                    {
+                        self.start(Role::Client);
+                    }
+                });
         }
 
         ui.add_space(14.0);

@@ -167,15 +167,27 @@ both on synthetic screens:
 
 Each prints a pairing fingerprint; they should match what the other reports.
 
-On real machines, drop `--backend headless` and let discovery find the host:
+On real machines, drop `--backend headless` and run the same command on every
+one of them:
 
 ```sh
-tether host --pair          # the machine with the keyboard and mouse
-tether client --pair        # every other machine
+tether run --pair           # on every machine
 ```
 
-Run both once with `--pair`, confirm the fingerprints match, then restart
+Run it once with `--pair` on each, confirm the fingerprints match, then restart
 without it — from then on only those exact machines are accepted.
+
+There is no host to nominate. The machines find each other over mDNS and settle
+between themselves which one arbitrates the shared pointer, by comparing
+machine ids — lowest wins, so both ends reach the same answer without
+negotiating. Whichever keyboard you touch drives, and the pointer crosses in
+either direction, regardless of which machine that turned out to be. A machine
+that finds nobody takes the job itself and picks up the others as they arrive;
+one that is outranked stands down, but never while somebody is connected to it.
+
+`tether host` and `tether client` still exist for pinning the roles down by
+hand, which is what you want when discovery cannot work — machines on different
+subnets, or mDNS blocked.
 
 ### Other commands
 

@@ -30,6 +30,7 @@ use tether_proto::{
 
 use crate::control::{Command, DaemonControl, PeerInfo};
 use crate::session;
+use crate::Outcome;
 
 pub struct Options {
     pub bind: String,
@@ -43,6 +44,13 @@ pub struct Options {
     /// Publishes status and receives commands. `None` when run headlessly from
     /// the CLI, where nothing is watching.
     pub control: Option<DaemonControl>,
+    /// Goes true when a machine with a stronger claim to arbitrate turns up.
+    ///
+    /// Only `auto` sets it, and it is honoured only while no client is
+    /// connected: handing the job over is cheap when nobody is relying on us
+    /// and rude once somebody is. `None` for a role the user chose, which is
+    /// never taken away.
+    pub supersede: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 /// Everything the session loop reacts to.
@@ -85,8 +93,8 @@ pub async fn run(
     mut options: Options,
     mut config: Config,
     identity: Identity,
-    mut backend: Backend,
-) -> Result<()> {
+    backend: &mut Backend,
+) -> Result<Outcome> {
     if backend.kind == BackendKind::Native {
         // Fail here rather than after the tap silently swallows everything.
         tether_platform::check_capture_permission()
@@ -148,6 +156,7 @@ pub async fn run(
             local_addr.port(),
             &identity.fingerprint,
             &Platform::current().to_string(),
+            identity.machine_id.0,
         ) {
             Ok(advertiser) => Some(advertiser),
             Err(err) => {
@@ -201,6 +210,8 @@ pub async fn run(
 
     tracing::info!("ready — move the pointer off a screen edge to cross machines");
 
+    let mut outcome = Outcome::Stopped;
+
     // Held apart so the loop can await a command and publish status in the
     // same iteration.
     let (status, mut commands) = match control {
@@ -217,6 +228,16 @@ pub async fn run(
                 break;
             }
 
+            // Guarded on having no clients: once a machine is relying on this
+            // one, the tie-break stops being worth a disconnection. The signal
+            // stays pending rather than being consumed, so it is still there
+            // when the last client leaves.
+            _ = stronger_claim(&mut options.supersede), if clients.is_empty() => {
+                tracing::info!("another machine should be arbitrating; standing down");
+                outcome = Outcome::Supersede;
+                break;
+            }
+
             Some(event) = events.recv() => {
                 handle_event(
                     event,
@@ -224,7 +245,7 @@ pub async fn run(
                     &mut clients,
                     &mut config,
                     &identity,
-                    &mut backend,
+                    backend,
                     &options,
                     &trust,
                     &mut input_owner,
@@ -256,12 +277,12 @@ pub async fn run(
                         // stop swallowing input that now has nowhere to go.
                         if let Some(from) = recalled {
                             release_holder(from, &clients);
-                            reclaim_cursor(&mut router, &mut backend);
+                            reclaim_cursor(&mut router, backend);
                         }
                     }
                     Command::JumpTo(machine) => {
                         let transition = router.jump_to(machine);
-                        apply_transition(transition, &router, &clients, &mut backend, input_owner);
+                        apply_transition(transition, &router, &clients, backend, input_owner);
                     }
                     Command::ToggleCursorLock => {
                         let locked = router.toggle_lock();
@@ -291,7 +312,7 @@ pub async fn run(
                         &mut clients,
                         &mut config,
                         &identity,
-                        &mut backend,
+                        backend,
                         &options,
                         &trust,
                         &mut input_owner,
@@ -315,7 +336,7 @@ pub async fn run(
                             formats: contents.formats(),
                         });
                         // Held for the pull that follows the offer.
-                        pending_clipboard_set(&mut backend, contents);
+                        pending_clipboard_set(backend, contents);
                     }
                     Ok(None) => {}
                     Err(err) => tracing::debug!(%err, "clipboard poll failed"),
@@ -332,7 +353,7 @@ pub async fn run(
         tracing::debug!(%machine, "said goodbye");
     }
     backend.capture.set_swallow(false);
-    pin_cursor(&backend, false);
+    pin_cursor(backend, false);
     let _ = backend.pointer.set_visible(true);
     backend.capture.stop();
 
@@ -349,7 +370,7 @@ pub async fn run(
         });
     }
 
-    Ok(())
+    Ok(outcome)
 }
 
 /// The host's own clipboard is the source of truth; this just records the last
@@ -624,6 +645,26 @@ fn publish(
         s.this_machine = Some(this);
         s.detail = detail;
     });
+}
+
+/// Resolves when someone else should be arbitrating, and never otherwise.
+///
+/// Pends forever when there is no signal, so the `select!` arm holding it
+/// simply never fires for a role the user picked by hand.
+async fn stronger_claim(supersede: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    let Some(rx) = supersede else {
+        return std::future::pending().await;
+    };
+    loop {
+        if *rx.borrow_and_update() {
+            return;
+        }
+        if rx.changed().await.is_err() {
+            // The supervisor is gone, which means nothing will ever ask us to
+            // stand down. Wait forever rather than spinning on a dead channel.
+            return std::future::pending().await;
+        }
+    }
 }
 
 /// Tell a client that no longer has the pointer to let go of what it is
