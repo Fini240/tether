@@ -64,8 +64,29 @@ impl Ownership {
 
     fn apply(&self, backend: &mut Backend) {
         let swallow = self.should_swallow();
-        backend.capture.set_swallow(swallow);
-        let _ = backend.pointer.set_visible(!swallow);
+        if swallow {
+            // Hide, pin, swallow — the same order the host uses, and mirrored
+            // on the way back. Suppression alone stops applications seeing the
+            // movement but not the cursor from following the mouse around the
+            // screen, which is what the user actually notices once the pointer
+            // is on another machine.
+            let _ = backend.pointer.set_visible(false);
+            pin(backend, true);
+            backend.capture.set_swallow(true);
+        } else {
+            backend.capture.set_swallow(false);
+            pin(backend, false);
+            let _ = backend.pointer.set_visible(true);
+        }
+    }
+}
+
+/// Freeze or release this machine's cursor, warning rather than failing: the
+/// pointer still routes correctly without it, the cursor is just less well
+/// behaved, and that is no reason to drop a session.
+fn pin(backend: &Backend, pinned: bool) {
+    if let Err(err) = backend.pointer.set_pinned(pinned) {
+        tracing::warn!(%err, pinned, "could not pin the cursor");
     }
 }
 
@@ -273,6 +294,7 @@ pub async fn run(
         // input suppressed just because the link dropped mid-session.
         let _ = backend.inject.release_all();
         backend.capture.set_swallow(false);
+        pin(&backend, false);
         let _ = backend.pointer.set_visible(true);
 
         let delay = backoff.next_delay();
@@ -282,6 +304,7 @@ pub async fn run(
 
     let _ = backend.inject.release_all();
     backend.capture.set_swallow(false);
+    pin(&backend, false);
     let _ = backend.pointer.set_visible(true);
     backend.capture.stop();
     config.save(&options.config_path).ok();

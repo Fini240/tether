@@ -68,6 +68,7 @@ struct Shared {
     injected: Vec<InputEvent>,
     cursor: Point,
     cursor_visible: bool,
+    cursor_pinned: bool,
     locks: u32,
 }
 
@@ -79,6 +80,7 @@ impl Default for Shared {
             injected: Vec::new(),
             cursor: Point::new(0, 0),
             cursor_visible: true,
+            cursor_pinned: false,
             locks: 0,
         }
     }
@@ -134,6 +136,15 @@ impl HeadlessHandle {
             .lock()
             .expect("headless mutex poisoned")
             .cursor_visible
+    }
+
+    /// Whether the physical mouse is currently severed from this machine's
+    /// cursor. Mirrors what the native backends do when the pointer is away.
+    pub fn cursor_pinned(&self) -> bool {
+        self.shared
+            .lock()
+            .expect("headless mutex poisoned")
+            .cursor_pinned
     }
 
     /// How many times the screen lock has been requested.
@@ -224,6 +235,15 @@ impl Pointer for HeadlessPointer {
             .lock()
             .expect("headless mutex poisoned")
             .cursor_visible = visible;
+        Ok(())
+    }
+
+    fn set_pinned(&self, pinned: bool) -> Result<()> {
+        self.handle
+            .shared
+            .lock()
+            .expect("headless mutex poisoned")
+            .cursor_pinned = pinned;
         Ok(())
     }
 }

@@ -100,3 +100,22 @@ pub fn check_capture_permission() -> Result<()> {
         Ok(())
     }
 }
+
+/// Undo anything that would leave this machine unusable if the process stops
+/// here and now: reattach the mouse to its cursor, and make the cursor
+/// visible.
+///
+/// Both are global state the window server keeps on our behalf, and both are
+/// set while the pointer is on another machine. Every ordinary exit unwinds
+/// them, but "ordinary" is doing a lot of work in that sentence — this is the
+/// call for a panic handler, where the alternative is a user left looking at a
+/// frozen desktop with no pointer to fix it with.
+///
+/// Safe to call at any time, from any thread, however many times.
+pub fn release_the_cursor() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = macos::inject::set_pinned(false);
+        let _ = macos::inject::set_cursor_visible(true);
+    }
+}

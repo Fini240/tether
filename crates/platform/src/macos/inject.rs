@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use tether_proto::{InputEvent, KeyCode, Modifiers, MouseButton, Point};
 
@@ -306,11 +306,218 @@ pub fn warp(to: Point) -> Result<()> {
                 "CGWarpMouseCursorPosition failed: {err}"
             )));
         }
-        // Without this the hardware mouse stays decoupled for about a quarter
-        // of a second and the first flick after a screen switch is swallowed.
-        CGAssociateMouseAndMouseCursorPosition(true);
+        if is_pinned() {
+            // Deliberately apart: the pointer is on another machine. Re-couple
+            // here and the physical mouse takes the local cursor straight back
+            // — which is the whole bug this pinning exists to stop. Move the
+            // spot we hold it at instead, so the watchdog does not immediately
+            // drag it back to where it used to be.
+            if let Ok(mut pin) = PIN.lock() {
+                pin.parked = Some(at);
+            }
+        } else {
+            // Without this the hardware mouse stays decoupled for about a
+            // quarter of a second and the first flick after a screen switch is
+            // swallowed.
+            CGAssociateMouseAndMouseCursorPosition(true);
+        }
     }
     Ok(())
+}
+
+/// Where CoreGraphics currently has the cursor.
+///
+/// `CGEventCreate` with no source fills in the current location, which is
+/// cheaper than creating an event source to ask. It has to be that call and
+/// not `CGEventCreateMouseEvent(NULL, kCGEventNull, ..)`: a null event is not
+/// a mouse event, so that returns NULL and the read fails every single time.
+pub fn position() -> Result<CGPoint> {
+    unsafe {
+        let event = CGEventCreate(ptr::null_mut());
+        if event.is_null() {
+            return Err(PlatformError::backend("could not read the cursor position"));
+        }
+        let at = CGEventGetLocation(event);
+        CFRelease(event);
+        Ok(at)
+    }
+}
+
+/// Where the cursor is held while another machine has the pointer.
+struct Pin {
+    pinned: bool,
+    /// The position it was pinned at, and the position the watchdog puts it
+    /// back to if something moves it anyway.
+    parked: Option<CGPoint>,
+    /// When the watchdog last had to intervene, so a pin that is failing
+    /// outright cannot turn every mouse event into two round trips to the
+    /// window server from inside the event tap's callback — which is how a tap
+    /// gets itself disabled for being slow.
+    held_at: Option<std::time::Instant>,
+}
+
+static PIN: Mutex<Pin> = Mutex::new(Pin {
+    pinned: false,
+    parked: None,
+    held_at: None,
+});
+
+/// How often the watchdog will drag a drifting cursor back. Fast enough that a
+/// failed pin still looks like a cursor that shivers rather than one that
+/// leaves, slow enough to be a rounding error in the tap's time budget.
+const HOLD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// The same flag as `PIN.pinned`, readable without taking the lock — the event
+/// tap consults it on every mouse event and must not block behind anything.
+static PINNED: AtomicBool = AtomicBool::new(false);
+
+pub fn is_pinned() -> bool {
+    PINNED.load(Ordering::SeqCst)
+}
+
+/// Sever the physical mouse from this machine's cursor, or reconnect it.
+///
+/// Swallowing the motion events at the tap stops applications from seeing the
+/// movement, but the cursor sprite is drawn from the HID stream underneath
+/// that: suppression alone leaves the arrow gliding around the screen the
+/// whole time the user is working on the other machine. Disassociating is what
+/// actually holds it still, and — unlike a listen-only tap — the deltas keep
+/// arriving, so the remote machine still gets driven.
+///
+/// Unlike hide/show this is a switch rather than a counter, so a repeated call
+/// in the same direction is free; it is skipped anyway to save the round trip
+/// to the window server on every mouse event.
+pub fn set_pinned(pinned: bool) -> Result<()> {
+    let mut pin = PIN
+        .lock()
+        .map_err(|_| PlatformError::backend("pin state poisoned"))?;
+    if pin.pinned == pinned {
+        return Ok(());
+    }
+
+    // Read the resting place before detaching, not after: once the mouse is
+    // loose the position can only get less trustworthy.
+    let parked = if pinned { position().ok() } else { None };
+
+    let err = unsafe { CGAssociateMouseAndMouseCursorPosition(!pinned) };
+    if err != 0 {
+        // Leave the flag alone. Believing we pinned when we did not would stop
+        // `warp` from ever re-associating, and the mouse would feel dead for a
+        // quarter second after every crossing.
+        return Err(PlatformError::backend(format!(
+            "could not {} the mouse: CGAssociateMouseAndMouseCursorPosition failed: {err}",
+            if pinned { "detach" } else { "reattach" }
+        )));
+    }
+
+    pin.pinned = pinned;
+    pin.parked = parked;
+    pin.held_at = None;
+    PINNED.store(pinned, Ordering::SeqCst);
+    tracing::debug!(pinned, "cursor pin changed");
+    Ok(())
+}
+
+/// Put the cursor back if it drifted while pinned.
+///
+/// Called from the event tap for movement it is swallowing. Disassociating the
+/// mouse is supposed to make this impossible, and normally it does — but the
+/// association is global session state that any process can switch back on,
+/// and a cursor that quietly resumes sliding is precisely the symptom that is
+/// hard to notice and maddening to live with. Cheap to check, so check.
+pub fn hold_parked(at: CGPoint) {
+    if !is_pinned() {
+        return;
+    }
+    // Decide under the lock, act outside it: this runs on the event tap's
+    // thread, and a tap whose callback waits on anything is a tap macOS
+    // switches off for being slow.
+    let parked = {
+        let Ok(mut pin) = PIN.lock() else { return };
+        let Some(parked) = pin.parked else { return };
+        // Sub-pixel wobble is not drift. A whole pixel of movement is.
+        if (at.x - parked.x).abs() < 1.0 && (at.y - parked.y).abs() < 1.0 {
+            return;
+        }
+        if pin
+            .held_at
+            .is_some_and(|held| held.elapsed() < HOLD_INTERVAL)
+        {
+            return;
+        }
+        pin.held_at = Some(std::time::Instant::now());
+        parked
+    };
+    tracing::debug!("the cursor moved while pinned; putting it back");
+    unsafe {
+        // Re-assert the detachment first: if the cursor moved, something put
+        // the mouse back together, and warping without fixing that just means
+        // doing it again on the next event.
+        CGAssociateMouseAndMouseCursorPosition(false);
+        CGWarpMouseCursorPosition(parked);
+    }
+}
+
+/// Ask the window server to honour our cursor hiding even though we are not
+/// the foreground application.
+///
+/// `CGDisplayHideCursor` is documented to work only for the frontmost app, and
+/// a daemon is never that: the call returns success and the arrow stays on
+/// screen, which is why a machine whose pointer had left still showed a cursor
+/// sitting there. The `SetsCursorInBackground` connection property is the
+/// long-standing way around it — private, unchanged for well over a decade,
+/// and used by every comparable tool.
+///
+/// Looked up with `dlsym` rather than linked. Linking a private symbol means a
+/// macOS that drops it stops this program from launching at all; looked up, it
+/// merely means the cursor stays visible while the pointer is away — which is
+/// cosmetic, since by then it is also pinned in place.
+///
+/// One documented hole remains, straight from Apple: the Dock keeps cursor
+/// control whenever it would be the active target, and blocks this. A cursor
+/// resting over the Dock may stay visible. It will not move.
+fn allow_hiding_from_the_background() {
+    static SYMBOLS: OnceLock<Option<(CGSDefaultConnectionFn, CGSSetConnectionPropertyFn)>> =
+        OnceLock::new();
+
+    let Some((connection, set_property)) = SYMBOLS.get_or_init(|| unsafe {
+        // Reference something in CoreGraphics before searching for symbols
+        // inside it. `RTLD_DEFAULT` searches the images already loaded, and a
+        // framework nothing has called yet need not be one of them — the
+        // lookup then fails, and this being a `OnceLock`, it would stay failed
+        // for the life of the process.
+        let _ = CGMainDisplayID();
+
+        let default = libc::dlsym(libc::RTLD_DEFAULT, c"_CGSDefaultConnection".as_ptr());
+        let set = libc::dlsym(libc::RTLD_DEFAULT, c"CGSSetConnectionProperty".as_ptr());
+        if default.is_null() || set.is_null() {
+            tracing::debug!("no CGS connection properties; the cursor may stay visible");
+            return None;
+        }
+        Some((
+            std::mem::transmute::<*mut std::ffi::c_void, CGSDefaultConnectionFn>(default),
+            std::mem::transmute::<*mut std::ffi::c_void, CGSSetConnectionPropertyFn>(set),
+        ))
+    }) else {
+        return;
+    };
+
+    unsafe {
+        let key = CFStringCreateWithCString(
+            ptr::null(),
+            c"SetsCursorInBackground".as_ptr(),
+            kCFStringEncodingUTF8,
+        );
+        if key.is_null() {
+            return;
+        }
+        let id = connection();
+        let err = set_property(id, id, key, kCFBooleanTrue);
+        CFRelease(key);
+        if err != 0 {
+            tracing::debug!(err, "the window server refused SetsCursorInBackground");
+        }
+    }
 }
 
 /// Whether the cursor is currently hidden by us.
@@ -326,6 +533,10 @@ pub fn set_cursor_visible(visible: bool) -> Result<()> {
     if HIDDEN.swap(!visible, Ordering::SeqCst) == !visible {
         return Ok(());
     }
+    // Ask for the background exemption every time rather than once at startup:
+    // it is a property of a window-server connection, and nothing promises the
+    // one we hold is the one we held an hour ago.
+    allow_hiding_from_the_background();
     unsafe {
         let display = CGMainDisplayID();
         let err = if visible {

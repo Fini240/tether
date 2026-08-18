@@ -116,6 +116,7 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(&cli.log);
+    install_panic_safety();
 
     // A current_thread runtime is enough: this program is entirely I/O bound
     // and the busiest path is a few thousand small frames a second.
@@ -125,6 +126,24 @@ fn main() -> Result<()> {
         .context("could not start the async runtime")?;
 
     runtime.block_on(run(cli))
+}
+
+/// Give the mouse back before dying.
+///
+/// While the pointer is on another machine this one's cursor is hidden and
+/// detached from the physical mouse, and both are settings the window server
+/// holds rather than anything that unwinds with the stack. A panic on the way
+/// out would otherwise leave the desk with no working pointer at all — and no
+/// pointer is exactly what you need to go and fix it.
+///
+/// A hook rather than a `Drop`, because release builds abort on panic and
+/// never run destructors; hooks still run.
+fn install_panic_safety() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tether_platform::release_the_cursor();
+        previous(info);
+    }));
 }
 
 async fn run(cli: Cli) -> Result<()> {

@@ -24,7 +24,7 @@ use tether_proto::MouseButton;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::ffi::*;
-use super::inject::{modifiers_from_flags, TETHER_EVENT_MARK};
+use super::inject::{hold_parked, modifiers_from_flags, TETHER_EVENT_MARK};
 use super::keycodes::vk_to_hid;
 use crate::traits::{InputCapture, LocalEvent, PlatformError, Result};
 
@@ -109,6 +109,13 @@ impl InputCapture for MacCapture {
     }
 
     fn stop(&mut self) {
+        // Belt and braces: never leave the mouse detached from the cursor with
+        // nothing running that would reattach it. Every ordinary path unpins
+        // before it gets here, but a panic or an early return on the way out
+        // would otherwise leave the user with a mouse that does nothing.
+        self.shared.swallow.store(false, Ordering::SeqCst);
+        let _ = super::inject::set_pinned(false);
+
         let runloop = self.shared.runloop.swap(ptr::null_mut(), Ordering::SeqCst);
         if !runloop.is_null() {
             unsafe { CFRunLoopStop(runloop) };
@@ -219,6 +226,17 @@ extern "C" fn tap_callback(
             tracing::warn!("event tap was disabled by the system; re-enabling");
             unsafe { CGEventTapEnable(tap, true) };
         }
+        // A tap that will not come back is the one case where a pinned cursor
+        // becomes a trap. Nothing is being captured any more, so the pointer
+        // on the other machine has stopped moving — and if the mouse here is
+        // still detached from its cursor, this machine has no working pointer
+        // either and no way for the user to fix it. Give the mouse back.
+        if tap.is_null() || !unsafe { CGEventTapIsEnabled(tap) } {
+            tracing::error!("the event tap will not re-enable; releasing the cursor");
+            let _ = super::inject::set_pinned(false);
+            let _ = super::inject::set_cursor_visible(true);
+            shared.swallow.store(false, Ordering::SeqCst);
+        }
         return event;
     }
 
@@ -244,8 +262,15 @@ extern "C" fn tap_callback(
                 return pass_through(shared, event);
             }
             if shared.swallow.load(Ordering::SeqCst) {
-                // Suppressed: the cursor is not moving, so its position says
-                // nothing. Only the device movement is real.
+                // Suppressed: the cursor is pinned, so its position says
+                // nothing about what the user is doing. Only the device
+                // movement is real.
+                //
+                // The position is still worth a glance: if it has moved, the
+                // pin is not holding and the cursor is quietly sliding around
+                // this machine while the user works on another. `hold_parked`
+                // puts it back and does nothing at all in the normal case.
+                hold_parked(unsafe { CGEventGetLocation(event) });
                 Some(LocalEvent::MouseDelta { dx, dy })
             } else {
                 let at = unsafe { CGEventGetLocation(event) };

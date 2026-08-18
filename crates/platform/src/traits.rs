@@ -129,6 +129,24 @@ pub trait Pointer: Send + Sync {
 
     /// Hide the cursor while another machine owns it, show it on return.
     fn set_visible(&self, visible: bool) -> Result<()>;
+
+    /// Freeze this machine's cursor in place while another machine owns the
+    /// pointer, and thaw it on return.
+    ///
+    /// Suppressing the motion events is not the same thing. An event tap can
+    /// stop applications seeing the movement, but on macOS the cursor sprite
+    /// is driven from the HID stream underneath that, so the arrow goes on
+    /// sliding across the screen the whole time the user is working on the
+    /// other machine — hidden if the hide took, plainly visible if it did not.
+    /// Pinning severs the physical mouse from the local cursor outright, which
+    /// is the only thing that actually holds it still.
+    ///
+    /// Backends that have no such notion may do nothing: the default is a
+    /// no-op, and correctness never depends on it, only comfort.
+    fn set_pinned(&self, pinned: bool) -> Result<()> {
+        let _ = pinned;
+        Ok(())
+    }
 }
 
 pub trait Monitors: Send + Sync {

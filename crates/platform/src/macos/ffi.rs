@@ -117,6 +117,12 @@ pub const fn event_mask(event_type: u32) -> u64 {
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
+    /// An empty event, which CoreGraphics fills in with the current cursor
+    /// location. `CGEventCreateMouseEvent` with `kCGEventNull` is *not* the
+    /// same thing and is not a way to ask: the type is not a mouse event, so
+    /// the call returns NULL and every position read from it fails.
+    pub fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
+
     pub fn CGEventCreateMouseEvent(
         source: CGEventSourceRef,
         mouseType: u32,
@@ -169,6 +175,7 @@ extern "C" {
         userInfo: *mut c_void,
     ) -> CFMachPortRef;
     pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    pub fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
 
     pub fn CGWarpMouseCursorPosition(newCursorPosition: CGPoint) -> CGError;
     /// Re-couples the hardware mouse to the cursor after a warp. A warp
@@ -197,9 +204,18 @@ extern "C" {
     pub fn CGDisplayIsMain(display: CGDirectDisplayID) -> u32;
 }
 
+pub const kCFStringEncodingUTF8: u32 = 0x0800_0100;
+
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     pub static kCFRunLoopCommonModes: CFStringRef;
+    pub static kCFBooleanTrue: *const c_void;
+
+    pub fn CFStringCreateWithCString(
+        alloc: CFAllocatorRef,
+        cStr: *const i8,
+        encoding: u32,
+    ) -> CFStringRef;
 
     pub fn CFMachPortCreateRunLoopSource(
         allocator: CFAllocatorRef,
@@ -219,3 +235,20 @@ extern "C" {
     /// Accessibility. Without it `CGEventTapCreate` returns NULL.
     pub fn AXIsProcessTrusted() -> bool;
 }
+
+/// `CGSSetConnectionProperty`, private to the window server.
+///
+/// Looked up with `dlsym` rather than linked: a missing private symbol is a
+/// link error that stops the whole program from starting, and a cursor that
+/// will not hide is not worth that.
+///
+/// The one documented way to hide the cursor, `CGDisplayHideCursor`, works
+/// only for the foreground application — Apple say so outright, and from a
+/// background daemon it returns success and does nothing at all. Setting the
+/// `SetsCursorInBackground` property on our window-server connection is what
+/// every KVM and cursor-hiding utility on macOS uses to get around that.
+pub type CGSSetConnectionPropertyFn =
+    unsafe extern "C" fn(i32, i32, CFStringRef, *const c_void) -> CGError;
+
+/// `_CGSDefaultConnection`, private: this process's window-server connection.
+pub type CGSDefaultConnectionFn = unsafe extern "C" fn() -> i32;

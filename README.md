@@ -269,7 +269,15 @@ with three displays is simply three rectangles. Clients never do layout maths;
 they are handed absolute coordinates in their own space.
 
 While a client holds the cursor, the host **suppresses** input locally, so
-keystrokes do not land on both machines at once.
+keystrokes do not land on both machines at once, and **pins** its own cursor so
+it stays where it was left. Suppression and pinning are two different jobs:
+suppressing stops applications from seeing the movement, but the cursor sprite
+is drawn from the input stream underneath that, so without pinning the arrow
+goes on gliding around the machine you walked away from — and turns up in the
+wrong place when you come back. On macOS the pin is
+`CGAssociateMouseAndMouseCursorPosition(false)`, which severs the physical
+mouse from the cursor while still delivering the movement that drives the other
+machine.
 
 Keys travel as USB HID usage codes — physical key positions, not characters —
 so the receiving machine's own keyboard layout applies. Crossing between macOS

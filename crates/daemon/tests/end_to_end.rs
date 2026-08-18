@@ -193,6 +193,13 @@ async fn the_cursor_crosses_the_edge_onto_a_client() {
         !harness.host_input.cursor_visible(),
         "the host's cursor should be hidden while a client has it"
     );
+    // Hiding is not holding still: without pinning, the host's cursor goes on
+    // tracking the mouse behind the user's back the whole time they are
+    // working on the client, and turns up somewhere else when they return.
+    assert!(
+        harness.host_input.cursor_pinned(),
+        "the host's cursor should be pinned while a client has it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -414,6 +421,10 @@ async fn the_cursor_comes_back_to_the_host() {
     assert!(
         harness.host_input.cursor_visible(),
         "the host's cursor should be visible again"
+    );
+    assert!(
+        !harness.host_input.cursor_pinned(),
+        "the host's mouse should drive its own cursor again"
     );
 }
 

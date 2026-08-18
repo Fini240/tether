@@ -104,11 +104,23 @@ impl CursorRouter {
     /// If the cursor's current position is no longer covered by any monitor it
     /// is recalled to the host, because the alternative is a pointer stranded
     /// on a screen that no longer exists.
-    pub fn set_layout(&mut self, layout: Layout) {
+    ///
+    /// Returns the machine the cursor was taken *from* when that happens, and
+    /// `None` when the pointer stayed where it was. The caller has to act on
+    /// it: that machine is still holding keys down and still believes the
+    /// pointer is on it, and this machine may still be suppressing its own
+    /// input for a pointer that has just come home. A recall that only moves
+    /// the router's idea of things leaves every other party disagreeing with
+    /// it.
+    #[must_use = "a silent recall leaves the old holder and the local input state stale"]
+    pub fn set_layout(&mut self, layout: Layout) -> Option<MachineId> {
         self.layout = layout;
-        if self.layout.locate(self.position).is_none() {
-            self.recall_to_host();
+        if self.layout.locate(self.position).is_some() {
+            return None;
         }
+        let from = self.active;
+        self.recall_to_host();
+        (from != self.host).then_some(from)
     }
 
     /// Adopt the operating system's idea of where the pointer is.
@@ -455,10 +467,26 @@ mod tests {
 
         let mut layout = r.layout().clone();
         layout.remove(MachineId(2));
-        r.set_layout(layout);
+        let recalled = r.set_layout(layout);
 
+        // Reported, not just done: the client that lost the cursor has to be
+        // told, and the host has to stop suppressing its own input.
+        assert_eq!(recalled, Some(MachineId(2)));
         assert_eq!(r.active(), MachineId(1));
         assert_eq!(r.position(), Point::new(960, 540));
+    }
+
+    #[test]
+    fn a_layout_that_still_covers_the_pointer_recalls_nothing() {
+        let mut r = pair();
+        r.move_by(1000, 0);
+        assert_eq!(r.active(), MachineId(2));
+
+        // The same arrangement, re-sent — which is what a reconnect looks
+        // like. Recalling here would yank the pointer home for no reason.
+        let layout = r.layout().clone();
+        assert_eq!(r.set_layout(layout), None);
+        assert_eq!(r.active(), MachineId(2));
     }
 }
 

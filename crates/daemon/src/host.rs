@@ -246,11 +246,18 @@ pub async fn run(
                     Command::SetLayout(layout) => {
                         tracing::info!("arrangement changed");
                         config.layout = layout.clone();
-                        router.set_layout(layout);
+                        let recalled = router.set_layout(layout);
                         if let Err(err) = config.save(&options.config_path) {
                             tracing::warn!(%err, "could not save the arrangement");
                         }
                         broadcast_arrangement(&clients, &router);
+                        // Rearranging the canvas out from under the pointer
+                        // brings it home. Tell whoever was holding it, and
+                        // stop swallowing input that now has nowhere to go.
+                        if let Some(from) = recalled {
+                            release_holder(from, &clients);
+                            reclaim_cursor(&mut router, &mut backend);
+                        }
                     }
                     Command::JumpTo(machine) => {
                         let transition = router.jump_to(machine);
@@ -266,13 +273,31 @@ pub async fn run(
 
             _ = heartbeat.tick() => {
                 let now = heartbeat_token();
-                clients.retain(|machine, client| {
-                    let alive = client.tx.send(Frame::Ping(now)).is_ok();
-                    if !alive {
-                        tracing::info!(%machine, "client writer gone");
-                    }
-                    alive
-                });
+                // Collect first, evict through the ordinary disconnect path
+                // second. Dropping the entry here and nothing else would leave
+                // the cursor routed at a machine no longer in the map: every
+                // move would be sent into a closed socket, and this host would
+                // go on suppressing its own input with the pointer nowhere.
+                let dead: Vec<MachineId> = clients
+                    .iter()
+                    .filter(|(_, client)| client.tx.send(Frame::Ping(now)).is_err())
+                    .map(|(machine, _)| *machine)
+                    .collect();
+                for machine in dead {
+                    tracing::info!(%machine, "client writer gone");
+                    handle_event(
+                        HostEvent::Gone(machine),
+                        &mut router,
+                        &mut clients,
+                        &mut config,
+                        &identity,
+                        &mut backend,
+                        &options,
+                        &trust,
+                        &mut input_owner,
+                    )?;
+                }
+                publish(&status, &router, &clients, input_owner, identity.machine_id);
             }
 
             _ = clipboard_poll.tick(), if config.options.sync_clipboard => {
@@ -307,6 +332,7 @@ pub async fn run(
         tracing::debug!(%machine, "said goodbye");
     }
     backend.capture.set_swallow(false);
+    pin_cursor(&backend, false);
     let _ = backend.pointer.set_visible(true);
     backend.capture.stop();
 
@@ -462,8 +488,12 @@ fn handle_event(
                     "placed on the canvas"
                 );
             }
-            router.set_layout(layout.clone());
+            let recalled = router.set_layout(layout.clone());
             config.layout = layout;
+            if let Some(from) = recalled {
+                release_holder(from, clients);
+                reclaim_cursor(router, backend);
+            }
 
             // Give it a switch hotkey if it does not have one, so "jump to that
             // machine" works without opening a config file.
@@ -532,7 +562,9 @@ fn handle_event(
             let mut layout = router.layout().clone();
             layout.remove(machine);
             let had_cursor = router.active() == machine;
-            router.set_layout(layout);
+            // The recall is expected here and needs no `Leave`: the machine it
+            // would go to is the one that just disconnected.
+            let _ = router.set_layout(layout);
             broadcast_arrangement(clients, router);
             if had_cursor {
                 reclaim_cursor(router, backend);
@@ -594,12 +626,25 @@ fn publish(
     });
 }
 
+/// Tell a client that no longer has the pointer to let go of what it is
+/// holding. Silent if it has already disconnected — there is nobody to tell.
+fn release_holder(from: MachineId, clients: &HashMap<MachineId, Client>) {
+    if let Some(client) = clients.get(&from) {
+        let _ = client.tx.send(Frame::ReleaseAll);
+        let _ = client.tx.send(Frame::Leave);
+    }
+}
+
 /// Bring the cursor back to the host and restore local input.
 fn reclaim_cursor(router: &mut CursorRouter, backend: &mut Backend) {
     if let Some(located) = router.recall_to_host() {
+        // Warp first, unpin second: re-attaching the mouse to a cursor that is
+        // still parked wherever it was frozen shows it in the wrong place for
+        // as long as it takes the warp to land.
         let _ = backend.pointer.warp(located.local);
     }
     backend.capture.set_swallow(false);
+    pin_cursor(backend, false);
     let _ = backend.pointer.set_visible(true);
     tracing::info!("cursor is back on the host");
 }
@@ -661,8 +706,35 @@ fn update_host_swallow(router: &CursorRouter, backend: &mut Backend, input_owner
     let cursor_here = router.active() == router.host();
     let swallow = owns && !cursor_here;
 
-    backend.capture.set_swallow(swallow);
-    let _ = backend.pointer.set_visible(!swallow);
+    if swallow {
+        // Hide, pin, swallow — in that order, and mirrored on the way back.
+        //
+        // Hiding first because it is the step that talks to the window server
+        // about the cursor, and the pin is the state that must survive.
+        // Swallowing last because both orders leave a one-event window and
+        // this is the harmless one: pinned-but-not-swallowed loses a flick of
+        // movement, while swallowed-but-not-pinned is the original complaint —
+        // the local cursor sliding away with nothing reporting where it went.
+        let _ = backend.pointer.set_visible(false);
+        pin_cursor(backend, true);
+        backend.capture.set_swallow(true);
+    } else {
+        backend.capture.set_swallow(false);
+        pin_cursor(backend, false);
+        let _ = backend.pointer.set_visible(true);
+    }
+}
+
+/// Freeze or release this machine's own cursor, complaining once if the
+/// platform refuses.
+///
+/// Not fatal: without it the pointer still routes correctly, the host's cursor
+/// just wanders about while somebody drives another machine. Worth a warning
+/// rather than a silent shrug, because that wandering is what the user sees.
+fn pin_cursor(backend: &Backend, pinned: bool) {
+    if let Err(err) = backend.pointer.set_pinned(pinned) {
+        tracing::warn!(%err, pinned, "could not pin the cursor");
+    }
 }
 
 fn handle_local(
@@ -847,10 +919,7 @@ fn apply_transition(
 
             // Whatever we are leaving must not be left holding keys down.
             if from != router.host() {
-                if let Some(client) = clients.get(&from) {
-                    let _ = client.tx.send(Frame::ReleaseAll);
-                    let _ = client.tx.send(Frame::Leave);
-                }
+                release_holder(from, clients);
             } else {
                 let _ = backend.inject.release_all();
             }
@@ -892,10 +961,7 @@ fn run_action(
         Action::RecallCursor => {
             let from = router.active();
             if from != router.host() {
-                if let Some(client) = clients.get(&from) {
-                    let _ = client.tx.send(Frame::ReleaseAll);
-                    let _ = client.tx.send(Frame::Leave);
-                }
+                release_holder(from, clients);
             }
             reclaim_cursor(router, backend);
         }

@@ -55,22 +55,8 @@ pub struct MacPointer;
 
 impl Pointer for MacPointer {
     fn position(&self) -> Result<Point> {
-        // Read the cursor from a null event, which CoreGraphics fills in with
-        // the current location. Cheaper than creating an event source.
-        unsafe {
-            let event = ffi::CGEventCreateMouseEvent(
-                std::ptr::null_mut(),
-                ffi::kCGEventNull,
-                ffi::CGPoint { x: 0.0, y: 0.0 },
-                ffi::kCGMouseButtonLeft,
-            );
-            if event.is_null() {
-                return Err(PlatformError::backend("could not read the cursor position"));
-            }
-            let location = ffi::CGEventGetLocation(event);
-            ffi::CFRelease(event);
-            Ok(Point::new(location.x as i32, location.y as i32))
-        }
+        let at = inject::position()?;
+        Ok(Point::new(at.x as i32, at.y as i32))
     }
 
     fn warp(&self, to: Point) -> Result<()> {
@@ -79,6 +65,10 @@ impl Pointer for MacPointer {
 
     fn set_visible(&self, visible: bool) -> Result<()> {
         inject::set_cursor_visible(visible)
+    }
+
+    fn set_pinned(&self, pinned: bool) -> Result<()> {
+        inject::set_pinned(pinned)
     }
 }
 
