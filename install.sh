@@ -4,13 +4,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Fini240/tether/main/install.sh | sh
 #
-# While the repository is PRIVATE that one-liner cannot work — GitHub requires
-# authentication to read a private repo's release assets, and an unauthenticated
-# curl gets a 404 rather than a useful error. Until it goes public, install with
-# the GitHub CLI, which this script uses automatically when it is available:
-#
-#   gh auth login
-#   sh install.sh
+# The `gh` CLI is used instead when it is installed and authenticated, which is
+# what makes this work against a private fork as well: an unauthenticated curl
+# against a private repo's release assets gets a 404 rather than a useful
+# error.
 #
 # Environment:
 #   TETHER_VERSION   tag to install (default: the latest release)
