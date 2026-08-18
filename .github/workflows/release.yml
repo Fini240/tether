@@ -123,11 +123,16 @@ jobs:
             if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
               gh release upload "$tag" dist/* --repo "${{ github.repository }}" --clobber
             else
+              # A real release, not a pre-release. Everything up to 0.3.5
+              # went out flagged as a beta, which parks it under "Pre-release"
+              # and stops it ever becoming the "Latest" one people land on.
+              # `--latest` says it outright rather than leaving GitHub to
+              # infer it from version ordering.
               gh release create "$tag" dist/* \
                 --repo "${{ github.repository }}" \
                 --title "$tag" \
                 --generate-notes \
-                --prerelease
+                --latest
             fi
           }
 
