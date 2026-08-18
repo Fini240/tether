@@ -573,6 +573,35 @@ impl TetherApp {
             )
             .changed();
 
+        ui.add_space(10.0);
+        ui.label(
+            egui::RichText::new("Scrolling from other machines")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        changed |= ui
+            .checkbox(
+                &mut self.config.options.scroll_invert,
+                "Reverse the direction",
+            )
+            .on_hover_text(
+                "For when a wheel on another machine scrolls this one the wrong way — \
+                 macOS scrolls naturally by default and Windows does not. Only affects \
+                 input arriving from elsewhere; this machine's own trackpad is untouched.",
+            )
+            .changed();
+        changed |= ui
+            .add(
+                egui::Slider::new(
+                    &mut self.config.options.scroll_scale,
+                    tether_core::config::SCROLL_SCALE_RANGE,
+                )
+                .logarithmic(true)
+                .text("Speed"),
+            )
+            .on_hover_text("How far one turn of a remote wheel scrolls here. 1.0 leaves it alone.")
+            .changed();
+
         if changed {
             if let Err(err) = self.config.save(&self.config_path) {
                 self.error = Some(format!("could not save settings: {err}"));

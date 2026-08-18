@@ -653,7 +653,10 @@ where
 
         Frame::Input(event) => {
             // Already remapped by the host, which knows both platforms and
-            // holds any per-machine overrides.
+            // holds any per-machine overrides. Scroll shaping is ours though:
+            // which way is up, and how far a detent goes, are properties of
+            // the machine being scrolled rather than the one with the wheel.
+            let event = config.options.shape_incoming(event);
             if let Err(err) = backend.inject.inject(&event) {
                 tracing::warn!(%err, "injection failed");
             }

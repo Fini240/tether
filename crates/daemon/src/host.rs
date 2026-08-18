@@ -810,6 +810,7 @@ fn handle_local(
                 router,
                 clients,
                 backend,
+                config,
                 InputEvent::MouseButton { button, pressed },
                 input_owner,
             );
@@ -821,6 +822,7 @@ fn handle_local(
                 router,
                 clients,
                 backend,
+                config,
                 InputEvent::MouseWheel { dx, dy },
                 input_owner,
             );
@@ -846,6 +848,7 @@ fn handle_local(
                 router,
                 clients,
                 backend,
+                config,
                 InputEvent::Key {
                     key,
                     pressed,
@@ -879,6 +882,7 @@ fn deliver(
     router: &CursorRouter,
     clients: &HashMap<MachineId, Client>,
     backend: &mut Backend,
+    config: &Config,
     event: InputEvent,
     input_owner: MachineId,
 ) {
@@ -894,6 +898,9 @@ fn deliver(
             Some(owner) => owner.keymap_in.remap_event(event),
             None => event,
         };
+        // How scrolling feels is decided where it lands, not where the wheel
+        // turned. Applied after the keymap so it sees the finished event.
+        let event = config.options.shape_incoming(event);
         if let Err(err) = backend.inject.inject(&event) {
             tracing::warn!(%err, "could not inject locally");
         }

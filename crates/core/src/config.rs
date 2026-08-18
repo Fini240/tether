@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::hotkey::{Action, Hotkey, HotkeyTable};
 use crate::keymap::ModifierMap;
 use crate::layout::{Layout, MachineId};
+use tether_proto::InputEvent;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -88,9 +89,54 @@ pub struct Options {
     /// Off means the cursor stays where it was and the newly-touched device
     /// simply drives it from afar.
     pub cursor_follows_input: bool,
+    /// Reverse the scroll direction of input arriving from another machine.
+    ///
+    /// Applied where the scrolling lands, not where the wheel turned, because
+    /// "which way is up" is a property of the machine you are looking at.
+    /// macOS defaults to natural scrolling and Windows does not, so a wheel
+    /// pushed away from you on a PC scrolls a Mac the wrong way — and turning
+    /// it off on the Mac would fix that while breaking its own trackpad.
+    ///
+    /// Does not touch this machine's own input. Scrolling on the Mac's
+    /// trackpad while sitting at the Mac never passes through here.
+    pub scroll_invert: bool,
+    /// Multiply incoming scroll by this before injecting it.
+    ///
+    /// One turn of a wheel means a different distance on each platform, and
+    /// each end has already applied its owner's preferences to its own
+    /// pointing devices. 0.5 halves how far a remote wheel scrolls here; 2.0
+    /// doubles it. Clamped to something sane on the way in, since a zero would
+    /// silently disable scrolling and a negative would invert it behind the
+    /// back of the setting above.
+    pub scroll_scale: f32,
     /// Per-peer modifier overrides, keyed by machine. Absent means use the
     /// platform default from `ModifierMap::between`.
     pub modifier_overrides: Vec<(MachineId, ModifierMap)>,
+}
+
+/// The widest scale worth allowing. Beyond this a single detent throws a
+/// document further than any screen is tall.
+pub const SCROLL_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.05..=5.0;
+
+impl Options {
+    /// Apply this machine's scroll preferences to an event arriving from
+    /// another one. Anything that is not a scroll passes through untouched.
+    pub fn shape_incoming(&self, event: InputEvent) -> InputEvent {
+        let InputEvent::MouseWheel { dx, dy } = event else {
+            return event;
+        };
+        let scale = if self.scroll_scale.is_finite() {
+            self.scroll_scale
+                .clamp(*SCROLL_SCALE_RANGE.start(), *SCROLL_SCALE_RANGE.end())
+        } else {
+            1.0
+        };
+        let sign = if self.scroll_invert { -1.0 } else { 1.0 };
+        InputEvent::MouseWheel {
+            dx: dx * scale * sign,
+            dy: dy * scale * sign,
+        }
+    }
 }
 
 impl Default for Options {
@@ -106,6 +152,8 @@ impl Default for Options {
             heartbeat_ms: 2_000,
             auto_input_handoff: true,
             cursor_follows_input: true,
+            scroll_invert: false,
+            scroll_scale: 1.0,
             modifier_overrides: Vec::new(),
         }
     }
@@ -310,6 +358,100 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
         }
         let home = std::env::var_os("HOME").ok_or(ConfigError::NoConfigDir)?;
         Ok(PathBuf::from(home).join(".config/tether"))
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    fn wheel(dx: f32, dy: f32) -> InputEvent {
+        InputEvent::MouseWheel { dx, dy }
+    }
+
+    fn shaped(options: &Options, dx: f32, dy: f32) -> (f32, f32) {
+        match options.shape_incoming(wheel(dx, dy)) {
+            InputEvent::MouseWheel { dx, dy } => (dx, dy),
+            other => panic!("a wheel event came back as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_default_changes_nothing() {
+        let options = Options::default();
+        assert_eq!(shaped(&options, 1.0, -3.0), (1.0, -3.0));
+    }
+
+    #[test]
+    fn inverting_flips_both_axes() {
+        let options = Options {
+            scroll_invert: true,
+            ..Options::default()
+        };
+        assert_eq!(shaped(&options, 1.0, -3.0), (-1.0, 3.0));
+    }
+
+    #[test]
+    fn scaling_multiplies_both_axes() {
+        let options = Options {
+            scroll_scale: 0.5,
+            ..Options::default()
+        };
+        assert_eq!(shaped(&options, 2.0, -4.0), (1.0, -2.0));
+    }
+
+    #[test]
+    fn inverting_and_scaling_compose() {
+        let options = Options {
+            scroll_invert: true,
+            scroll_scale: 0.5,
+            ..Options::default()
+        };
+        assert_eq!(shaped(&options, 2.0, -4.0), (-1.0, 2.0));
+    }
+
+    #[test]
+    fn a_zero_scale_cannot_disable_scrolling() {
+        // Silently ignoring every scroll is a worse outcome than a very slow
+        // one, and much harder to work out from the outside.
+        let options = Options {
+            scroll_scale: 0.0,
+            ..Options::default()
+        };
+        let (_, dy) = shaped(&options, 0.0, 4.0);
+        assert!(dy > 0.0, "a zero scale swallowed the scroll entirely");
+    }
+
+    #[test]
+    fn a_negative_scale_cannot_invert_behind_the_settings_back() {
+        // Otherwise scroll_invert says one thing and the direction does
+        // another, and no amount of toggling it explains the behaviour.
+        let options = Options {
+            scroll_scale: -2.0,
+            ..Options::default()
+        };
+        let (_, dy) = shaped(&options, 0.0, 4.0);
+        assert!(dy > 0.0, "a negative scale inverted the direction");
+    }
+
+    #[test]
+    fn a_nonsense_scale_falls_back_to_unchanged() {
+        let options = Options {
+            scroll_scale: f32::NAN,
+            ..Options::default()
+        };
+        assert_eq!(shaped(&options, 1.0, -3.0), (1.0, -3.0));
+    }
+
+    #[test]
+    fn nothing_but_scrolling_is_touched() {
+        let options = Options {
+            scroll_invert: true,
+            scroll_scale: 0.25,
+            ..Options::default()
+        };
+        let move_event = InputEvent::MouseMove { x: 10, y: 20 };
+        assert_eq!(options.shape_incoming(move_event.clone()), move_event);
     }
 }
 
