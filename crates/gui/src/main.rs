@@ -38,7 +38,14 @@ fn main() -> eframe::Result {
             .with_inner_size([980.0, 700.0])
             .with_min_inner_size([760.0, 560.0])
             .with_title("Tether")
-            .with_icon(load_icon()),
+            .with_icon(load_icon())
+            // Wayland ignores the embedded icon entirely: a compositor matches
+            // a window to its icon, its name and its place in the launcher by
+            // app_id, which must equal the basename of an installed .desktop
+            // file. Without this, KDE shows a generic grey square and cannot
+            // group the window with its launcher entry, however good the icon
+            // baked into the binary is. X11 reads the same string as WM_CLASS.
+            .with_app_id("dev.tether.Tether"),
         ..Default::default()
     };
 

@@ -80,7 +80,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/tether" "dist/$name/tether"
           cp "target/${{ matrix.target }}/release/tether-gui" "dist/$name/tether-gui"
           cp packaging/README-LINUX.txt "dist/$name/README.txt"
-          cp packaging/linux/99-tether.rules "dist/$name/99-tether.rules"
+          # Everything that turns two binaries into an application: the udev
+          # rule, the launcher entry, its icon, and the script that puts them
+          # where the desktop looks for them.
+          cp packaging/linux/99-tether.rules "dist/$name/"
+          cp packaging/linux/dev.tether.Tether.desktop "dist/$name/"
+          cp packaging/linux/dev.tether.Tether.png "dist/$name/"
+          cp packaging/linux/install.sh "dist/$name/"
+          chmod +x "dist/$name/install.sh"
           tar -czf "dist/$name.tar.gz" -C dist "$name"
           rm -rf "dist/${name:?}"
           (cd dist && sha256sum ./*.tar.gz >SHA256SUMS)

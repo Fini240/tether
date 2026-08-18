@@ -143,6 +143,15 @@ membership only applies to new sessions, and this is the step people skip
 before reporting that it does not work. Check with `groups | grep input`, then
 `tether doctor`.
 
+Or let the archive do all of that, and add Tether to your application launcher
+with its icon while it is there:
+
+```sh
+sh install.sh              # binaries, icon, launcher entry, udev rule, group
+sh install.sh --autostart  # …and start it at login
+sh install.sh --uninstall  # take it back out
+```
+
 > Anyone in the `input` group can read every keystroke on the machine and
 > synthesise input as any user. That is inherent to a software KVM — Synergy,
 > Barrier and Deskflow need the same — but it is worth knowing before granting

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Tether
+GenericName=Software KVM
+Comment=Share one keyboard and mouse across your machines
+# The basename of this file must match the app_id the window sets, or Wayland
+# shows a generic icon and refuses to group the window with this entry.
+Icon=dev.tether.Tether
+Exec=tether-gui
+Terminal=false
+Categories=Utility;Network;RemoteAccess;
+Keywords=kvm;keyboard;mouse;share;synergy;barrier;remote;
+StartupNotify=true
+StartupWMClass=dev.tether.Tether

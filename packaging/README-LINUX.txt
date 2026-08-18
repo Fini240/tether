@@ -1,33 +1,45 @@
 Tether for Linux
 ================
 
-Two binaries:
+Easiest way in
+--------------
 
-    tether        the command-line version
-    tether-gui    the window
+    sh install.sh
 
-Put "tether" somewhere on your PATH, e.g.
+That installs both binaries, adds Tether to your application launcher
+with its icon, installs the udev rule, and puts you in the "input"
+group. Add --autostart to have it start at login, or --uninstall to
+take it back out again.
 
-    sudo install -m 0755 tether /usr/local/bin/tether
+Then LOG OUT AND BACK IN — group membership only applies to new
+sessions, and this is the step people skip before reporting that it
+does not work. Check with: groups | grep input
+
+    tether doctor
 
 
-One-time permission setup
--------------------------
+What is in this archive
+-----------------------
+
+    tether                       the command-line version
+    tether-gui                   the window
+    install.sh                   installs all of the below
+    99-tether.rules              the udev rule
+    dev.tether.Tether.desktop    the launcher entry
+    dev.tether.Tether.png        its icon
+
+
+By hand instead
+---------------
 Tether reads /dev/input/event* to capture your keyboard and mouse, and
 writes /dev/uinput to let another machine drive this one. Both are
 privileged. Grant them once:
 
+    sudo install -m 0755 tether tether-gui /usr/local/bin/
     sudo cp 99-tether.rules /etc/udev/rules.d/
     sudo udevadm control --reload-rules && sudo udevadm trigger
     sudo modprobe uinput
     sudo usermod -aG input $USER
-
-Then LOG OUT AND BACK IN — group membership only applies to new sessions,
-and this is the step people skip before reporting that it does not work.
-
-Check it took:
-
-    tether doctor
 
 Anyone in the "input" group can read every keystroke on this machine and
 synthesise input as any user. That is what a software KVM is; the same is
