@@ -1,0 +1,77 @@
+# Maintainer: Finn Lütke <96079387+Fini240@users.noreply.github.com>
+#
+# Build and install Tether the Arch way, so pacman owns the files and
+# `pacman -R tether` takes all of them back out:
+#
+#     makepkg -si
+#
+# There is a deliberate difference from install.sh here. This installs the udev
+# rule, because that is a packaged system file, and does NOT add anyone to the
+# `input` group, because handing an account the ability to read every keystroke
+# on the machine is not a thing a package manager should do behind your back.
+# The post-install message says so and gives you the one command.
+
+pkgname=tether
+pkgver=0.5.1
+pkgrel=1
+pkgdesc="Share one keyboard and mouse across machines on a LAN — a software KVM"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Fini240/tether"
+license=('MIT' 'Apache-2.0')
+depends=('libxkbcommon' 'wayland' 'libx11' 'libxcb' 'libxi' 'libxcursor'
+         'libxrandr' 'libglvnd' 'systemd-libs')
+makedepends=('cargo')
+install="$pkgname.install"
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('ca93016dfae1cf6cdf745ed92e66066c9bca25721a121c04bfecfc47b52ffa81')
+
+# The workspace sets `lto = "thin"` and `panic = "abort"` in its release
+# profile. makepkg injects its own LTO flags on top, which conflict; let the
+# crate's own profile win.
+options=('!lto')
+
+prepare() {
+	cd "$pkgname-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+	cd "$pkgname-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	export CARGO_TARGET_DIR=target
+	cargo build --frozen --release --bin tether --bin tether-gui
+}
+
+check() {
+	cd "$pkgname-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	# The native input path is not exercised here — it needs real devices and a
+	# logged-in session, neither of which exists in a build chroot. What does
+	# run is everything above it, including a two-role end-to-end test over a
+	# real TLS socket on synthetic screens.
+	cargo test --frozen --workspace
+}
+
+package() {
+	cd "$pkgname-$pkgver"
+
+	install -Dm755 target/release/tether "$pkgdir/usr/bin/tether"
+	install -Dm755 target/release/tether-gui "$pkgdir/usr/bin/tether-gui"
+
+	install -Dm644 packaging/linux/dev.tether.Tether.desktop \
+		"$pkgdir/usr/share/applications/dev.tether.Tether.desktop"
+	install -Dm644 packaging/linux/dev.tether.Tether.png \
+		"$pkgdir/usr/share/icons/hicolor/512x512/apps/dev.tether.Tether.png"
+
+	# /usr/lib rather than /etc: this is a rule shipped by a package, and a
+	# user who edits it should be able to shadow it from /etc without pacman
+	# arguing about the change on every upgrade.
+	install -Dm644 packaging/linux/99-tether.rules \
+		"$pkgdir/usr/lib/udev/rules.d/99-tether.rules"
+
+	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+	install -Dm644 packaging/README-LINUX.txt "$pkgdir/usr/share/doc/$pkgname/README-LINUX.txt"
+	install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+	install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

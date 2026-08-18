@@ -152,6 +152,20 @@ sh install.sh --autostart  # …and start it at login
 sh install.sh --uninstall  # take it back out
 ```
 
+**On Arch, Garuda, EndeavourOS** there is a `PKGBUILD`, so pacman owns the
+files and `pacman -R tether` takes all of them back out:
+
+```sh
+curl -O https://raw.githubusercontent.com/Fini240/tether/main/packaging/linux/PKGBUILD
+curl -O https://raw.githubusercontent.com/Fini240/tether/main/packaging/linux/tether.install
+makepkg -si
+```
+
+It installs the udev rule, because that is a packaged system file, and
+deliberately does **not** put you in the `input` group — a package manager
+should not hand an account the ability to read every keystroke without being
+asked. It prints the one command to do it yourself.
+
 > Anyone in the `input` group can read every keystroke on the machine and
 > synthesise input as any user. That is inherent to a software KVM — Synergy,
 > Barrier and Deskflow need the same — but it is worth knowing before granting

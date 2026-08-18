@@ -1,0 +1,67 @@
+# Shown by pacman after install, upgrade and removal.
+#
+# The group membership is deliberately left to the user. Adding an account to
+# `input` lets it read every keystroke on the machine and synthesise input as
+# any user — true of every software KVM, and still not something a package
+# should arrange without being asked.
+
+post_install() {
+	cat <<'MSG'
+
+  Tether needs one thing before it can capture or inject input:
+
+      sudo usermod -aG input $USER
+
+  Then LOG OUT AND BACK IN. Group membership only applies to new sessions,
+  and a screen lock is not enough. Check it took with:
+
+      groups | grep input
+      tether doctor
+
+  Anyone in the `input` group can read every keystroke on this machine.
+  That is inherent to sharing a keyboard between computers, but do not add
+  accounts you would not trust with a keylogger.
+
+  Then, on every machine you want to share with:
+
+      tether run --pair      once, to trust each other
+      tether run             from then on
+
+  Or open Tether from your application launcher.
+
+MSG
+
+	if [ ! -e /dev/uinput ]; then
+		cat <<'MSG'
+  The uinput module is not loaded. This machine cannot be driven by another
+  until it is:
+
+      sudo modprobe uinput
+      echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+
+MSG
+	fi
+}
+
+post_upgrade() {
+	if ! groups | tr ' ' '\n' | grep -qx input; then
+		echo
+		echo "  Reminder: you are not in the 'input' group, so Tether cannot"
+		echo "  capture or inject input. See /usr/share/doc/tether/README-LINUX.txt"
+		echo
+	fi
+}
+
+post_remove() {
+	cat <<'MSG'
+
+  Left behind on purpose:
+      your membership of the 'input' group
+      ~/.config/tether   (config, identity and paired machines)
+
+  Remove them by hand if you want them gone:
+      sudo gpasswd -d $USER input
+      rm -rf ~/.config/tether
+
+MSG
+}
