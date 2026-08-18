@@ -33,6 +33,9 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 pub use traits::{
     ClipboardAccess, InputCapture, InputInject, LocalEvent, Monitors, PlatformError, Pointer,
     Result, ScreenLock,
@@ -77,10 +80,15 @@ fn native() -> Result<Backend> {
     windows::backend()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn native() -> Result<Backend> {
+    linux::backend()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn native() -> Result<Backend> {
     Err(traits::PlatformError::unsupported(
-        "this operating system. Tether targets macOS and Windows; \
+        "this operating system. Tether targets macOS, Windows and Linux; \
          run with --backend headless to exercise the rest of the stack",
     ))
 }
@@ -95,7 +103,11 @@ pub fn check_capture_permission() -> Result<()> {
     {
         macos::check_accessibility_permission()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::check_input_permission()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Ok(())
     }

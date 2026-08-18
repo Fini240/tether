@@ -29,12 +29,24 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
 
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev \
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev
 
       - name: Resolve version
         id: version
@@ -52,12 +64,26 @@ jobs:
           chmod +x packaging/macos/bundle.sh
           packaging/macos/bundle.sh "${{ steps.version.outputs.version }}"
 
-      - name: Build (Windows)
+      - name: Build (Windows and Linux)
         if: runner.os != 'macOS'
         shell: bash
         run: |
           cargo build --release --bin tether --bin tether-gui \
             --target ${{ matrix.target }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          name="tether-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/tether" "dist/$name/tether"
+          cp "target/${{ matrix.target }}/release/tether-gui" "dist/$name/tether-gui"
+          cp packaging/README-LINUX.txt "dist/$name/README.txt"
+          cp packaging/linux/99-tether.rules "dist/$name/99-tether.rules"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/${name:?}"
+          (cd dist && sha256sum ./*.tar.gz >SHA256SUMS)
 
       - name: Package (Windows)
         if: runner.os == 'Windows'

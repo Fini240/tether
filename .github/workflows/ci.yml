@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest]
+        os: [macos-14, windows-latest, ubuntu-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +27,18 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      # The window depends on X11, Wayland and GL headers. The input backend
+      # itself needs none of them — evdev and uinput are kernel interfaces and
+      # pure Rust from here — so a machine that only wants the CLI does not
+      # need any of this.
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev \
+            libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev
 
       - name: Format
         run: cargo fmt --all --check

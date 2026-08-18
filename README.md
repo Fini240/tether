@@ -4,18 +4,22 @@ Share one keyboard and mouse across several computers on a LAN — a software
 KVM. No extra hardware, no cloud, and no screen streaming: only input,
 clipboard and file events cross the wire.
 
-**macOS and Windows.** Linux is out of scope — Wayland offers no legacy input
-path at all, and supporting X11 alone would mean shipping something broken on
-the default session of every current distribution.
+**macOS, Windows and Linux.** The Linux backend works on evdev and uinput
+rather than X11 or Wayland, which is what lets one backend cover both — those
+are kernel interfaces, and the kernel does not change when the session does.
+It costs a permission (membership of the `input` group) and two things the
+other platforms get for free: the cursor position, which only the display
+server knows, and the screen arrangement, which the kernel does not. See
+[Linux](#linux).
 
-There is a window on both platforms: start and stop a session, and drag your
+There is a window on all three: start and stop a session, and drag your
 screens into the arrangement they actually have on your desk.
 
 ## Install
 
 Downloads are on the [releases page](https://github.com/Fini240/tether/releases).
 Each release ships a macOS universal build (Apple Silicon and Intel in one
-binary), a Linux x86_64 binary, and a Windows x86_64 binary, with a
+binary), a Windows x86_64 build, and a Linux x86_64 build, with a
 `SHA256SUMS` file.
 
 **Which one do you want?**
@@ -296,6 +300,45 @@ so the receiving machine's own keyboard layout applies. Crossing between macOS
 and anything else swaps Control and Meta, which is what makes ⌘C work as Ctrl+C
 and back again.
 
+## Linux
+
+Input on Linux goes through `evdev` and `uinput` — the kernel's own interfaces
+— rather than X11 or a Wayland protocol. One backend then covers X11, Wayland
+and a bare console, instead of one that works on whichever of those the author
+happened to run.
+
+That needs a permission, once:
+
+```sh
+sudo cp packaging/linux/99-tether.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo modprobe uinput
+sudo usermod -aG input $USER      # then log out and back in
+```
+
+`tether doctor` says whether it took. The group is not a formality: anyone in
+it can read every keystroke on the machine and synthesise input as any user.
+That is inherent to a software KVM — Synergy, Barrier and Deskflow all need the
+same — but it is worth knowing before granting it to an account.
+
+Two limitations follow from working below the display server, and neither has a
+fix that would not mean giving up on Wayland:
+
+* **The cursor position is not readable.** Only the display server knows it.
+  Movement is tracked as deltas, which is the path every platform already uses
+  while suppressed. On one screen this is invisible. Across two screens of
+  different heights the pointer can enter the next one at the wrong height.
+* **The screen arrangement is not readable.** `/sys/class/drm` gives each
+  display's size but not where you put it. One screen is exact; several are
+  guessed left to right and may need one drag in the arrangement editor.
+
+Suppression is `EVIOCGRAB`, which takes the device for this process alone —
+so on Linux, unlike macOS, freezing the local cursor while the pointer is
+elsewhere needs no extra machinery. It is the same call.
+
+The window needs X11 or Wayland libraries present. The `tether` CLI needs none
+of them and runs on a machine with no desktop at all.
+
 ## Security
 
 There is no certificate authority on a LAN, so trust is **fingerprint pinning**,
@@ -319,7 +362,12 @@ fingerprints.
 |---|---|---|---|---|---|
 | macOS | ✅ CGEventTap | ✅ CGEvent | ✅ | ✅ | ✅ |
 | Windows | ✅ WH_*_LL hooks | ✅ SendInput | ✅ | ✅ | ✅ |
+| Linux | ✅ evdev | ✅ uinput | ⚠️ sizes only | ✅ | ⚠️ `loginctl` |
 | headless | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+⚠️ on Linux: the kernel knows each display's size but not how you arranged
+them, and screen locking goes through `loginctl`, which not every session
+provides. Both are explained under [Linux](#linux).
 
 
 Done: edge switching, multi-monitor, relative screen arrangement from the CLI,

@@ -1,0 +1,19 @@
+# Let members of the "input" group read input devices and create virtual ones.
+#
+# Tether reads /dev/input/event* to capture the keyboard and mouse, and writes
+# /dev/uinput to drive this machine from another one. Both are privileged by
+# default. On most distributions the event nodes already belong to the "input"
+# group and only uinput needs widening — this rule does both, so it works the
+# same everywhere.
+#
+#   sudo cp 99-tether.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   sudo modprobe uinput
+#   sudo usermod -aG input $USER      # then log out and back in
+#
+# This grants any member of "input" the ability to read every keystroke on the
+# machine and to synthesise input as any user. That is inherent to what a
+# software KVM does, and is the same grant Synergy, Barrier and Deskflow need.
+# Do not add accounts to that group that you would not trust with a keylogger.
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+SUBSYSTEM=="input", GROUP="input", MODE="0640"

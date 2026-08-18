@@ -17,6 +17,15 @@ png = "0.17"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# evdev and uinput, rather than X11 or a Wayland protocol: they sit below the
+# display server, so one backend covers X11, Wayland and a bare console. The
+# cost is a permission — reading /dev/input and writing /dev/uinput needs the
+# `input` group or root — which is a one-line udev rule and the same trade
+# every input tool on Linux makes.
+evdev = "0.12"
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
