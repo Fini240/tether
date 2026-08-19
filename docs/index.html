@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Tether — share one keyboard and mouse between Mac, Windows and Linux</title>
+<meta name="description" content="Free open-source software KVM. Move your pointer off the edge of one screen and it appears on the next computer — keyboard, mouse and clipboard shared over your LAN. Works on macOS, Windows and Linux, including Wayland.">
+<link rel="canonical" href="https://fini240.github.io/tether/">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://fini240.github.io/tether/">
+<meta property="og:title" content="Tether — share one keyboard and mouse between Mac, Windows and Linux">
+<meta property="og:description" content="Move your pointer off the edge of one screen and it appears on the next computer. Keyboard, mouse and clipboard shared over your LAN. Free, open source, and it works on Wayland.">
+<meta property="og:image" content="https://fini240.github.io/tether/tether.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Tether — one keyboard and mouse across every computer on your desk">
+<meta name="twitter:description" content="A free, open-source software KVM for macOS, Windows and Linux. No hardware, no cloud, no screen streaming.">
+<meta name="twitter:image" content="https://fini240.github.io/tether/tether.png">
+
+<link rel="icon" href="tether.png" type="image/png">
+<link rel="apple-touch-icon" href="tether-180.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Tether",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "macOS, Windows, Linux",
+  "description": "Software KVM that shares one keyboard, mouse and clipboard across several computers on a LAN. Move the pointer off a screen edge and it appears on the next machine.",
+  "url": "https://fini240.github.io/tether/",
+  "downloadUrl": "https://github.com/Fini240/tether/releases/latest",
+  "softwareVersion": "0.5.2",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Does Tether work on Wayland?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. Tether uses the kernel's evdev and uinput interfaces rather than X11 or a Wayland protocol, so one backend covers X11, Wayland and a bare console. It needs membership of the input group, granted once with a udev rule shipped in the release." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Tether stream my screen?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. Only input events and clipboard contents cross the network. Each computer draws its own screen, so there is no video latency and no bandwidth cost. It is not remote desktop." }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Tether free?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. Tether is free and open source under the MIT or Apache-2.0 licence, with no paid tier, no account and no telemetry." }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Tether an alternative to Synergy or Barrier?",
+      "acceptedAnswer": { "@type": "Answer", "text": "It solves the same problem. Synergy is commercial, Barrier is no longer actively maintained, and Deskflow continues that lineage. Tether is a fresh implementation in Rust with automatic setup and a Wayland-capable Linux backend." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work over the internet?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No, by design. Tether is for computers on the same local network. Connections are TLS encrypted and authenticated by pinned certificate fingerprints in both directions." }
+    },
+    {
+      "@type": "Question",
+      "name": "Which machine has to be the host?",
+      "acceptedAnswer": { "@type": "Answer", "text": "None of them. Every machine runs the same command, they find each other over mDNS, and they elect between themselves which one keeps track of the pointer. Whichever keyboard you touch takes over driving." }
+    }
+  ]
+}
+</script>
+
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-2: #f6f8fa;
+    --panel: #ffffff;
+    --line: #d8dee4;
+    --ink: #1c2128;
+    --ink-dim: #57606a;
+    --ink-faint: #848d97;
+    --accent: #1a7f5a;
+    --accent-soft: #e6f4ee;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --bg-2: #12171e;
+      --panel: #161b22;
+      --line: #272e38;
+      --ink: #e6edf3;
+      --ink-dim: #9aa7b4;
+      --ink-faint: #6e7781;
+      --accent: #56d4a0;
+      --accent-soft: #12261f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 22px; }
+  a { color: var(--accent); }
+
+  header { padding: 26px 0; }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 650; font-size: 17px; }
+  .brand img { width: 30px; height: 30px; border-radius: 7px; }
+  .brand span { color: var(--ink); }
+  .brand nav { margin-left: auto; display: flex; gap: 20px; font-size: 14.5px; font-weight: 500; }
+  .brand nav a { color: var(--ink-dim); text-decoration: none; }
+  .brand nav a:hover { color: var(--ink); }
+
+  .hero { padding: 46px 0 8px; }
+  h1 {
+    font-size: clamp(34px, 6vw, 52px); line-height: 1.08;
+    letter-spacing: -0.03em; margin: 0 0 18px; max-width: 17ch;
+  }
+  .lede { font-size: clamp(17px, 2.4vw, 20px); color: var(--ink-dim); max-width: 60ch; margin: 0 0 12px; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0 10px; align-items: center; }
+  .btn {
+    display: inline-block; padding: 12px 20px; border-radius: 9px;
+    font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid transparent;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  @media (prefers-color-scheme: dark) { .btn-primary { color: #06120d; } }
+  .btn-secondary { border-color: var(--line); color: var(--ink); background: var(--panel); }
+  .cta small { color: var(--ink-faint); font-size: 13.5px; }
+
+  section { padding: 52px 0; border-top: 1px solid var(--line); margin-top: 40px; }
+  section:first-of-type { border-top: 0; margin-top: 0; }
+  h2 { font-size: clamp(24px, 3.6vw, 31px); letter-spacing: -0.02em; margin: 0 0 10px; }
+  h3 { font-size: 17px; margin: 0 0 6px; }
+  p { color: var(--ink-dim); max-width: 68ch; }
+  p strong { color: var(--ink); font-weight: 600; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 28px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 20px; }
+  .card p { margin: 0; font-size: 14.6px; }
+  .card .ico { font-size: 21px; line-height: 1; margin-bottom: 10px; display: block; }
+
+  figure { margin: 34px 0 0; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--ink-faint); font-size: 13.5px; text-align: center; margin-top: 12px; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 22px; font-size: 15px; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); }
+  td { color: var(--ink-dim); }
+  td:first-child { color: var(--ink); font-weight: 550; }
+
+  pre {
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 9px;
+    padding: 15px 17px; overflow-x: auto; font: 13.5px/1.7 var(--mono); color: var(--ink);
+  }
+  code:not(pre code) {
+    font: 13.5px var(--mono); background: var(--bg-2); border: 1px solid var(--line);
+    padding: 1px 5px; border-radius: 5px;
+  }
+
+  details {
+    border-bottom: 1px solid var(--line); padding: 15px 0;
+  }
+  details summary {
+    cursor: pointer; font-weight: 600; font-size: 16.5px; color: var(--ink); list-style: none;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::before { content: "+"; color: var(--accent); font-weight: 700; }
+  details[open] summary::before { content: "−"; }
+  details p { margin: 10px 0 0 22px; }
+
+  .note {
+    background: var(--accent-soft); border: 1px solid var(--line);
+    border-radius: 9px; padding: 15px 18px; margin-top: 24px;
+  }
+  .note p { margin: 0; color: var(--ink-dim); font-size: 14.6px; }
+
+  footer { border-top: 1px solid var(--line); padding: 30px 0 60px; color: var(--ink-faint); font-size: 14px; }
+  footer a { color: var(--ink-dim); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <img src="tether.png" alt="Tether icon" width="30" height="30">
+    <span>Tether</span>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/Fini240/tether">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <h1>One keyboard and mouse for every computer on your desk.</h1>
+  <p class="lede">
+    Move your pointer off the edge of one screen and it carries on onto the next
+    computer. Type there, click there, paste what you copied. <strong>No KVM
+    switch, no cloud account, no screen streaming.</strong>
+  </p>
+  <p class="lede">
+    Free and open source, for <strong>macOS, Windows and Linux</strong> —
+    including Wayland.
+  </p>
+
+  <div class="cta">
+    <a class="btn btn-primary" href="https://github.com/Fini240/tether/releases/latest">Download for free</a>
+    <a class="btn btn-secondary" href="https://github.com/Fini240/tether">View source on GitHub</a>
+    <small>MIT / Apache-2.0 · no account · no telemetry</small>
+  </div>
+</div>
+
+<figure>
+  <svg viewBox="0 0 900 260" role="img" aria-labelledby="diagram-title">
+    <title id="diagram-title">A pointer crossing from a Windows PC to a Mac and a Linux laptop, with keystrokes and clipboard following it</title>
+    <defs>
+      <style>
+        .scr { fill: var(--panel); stroke: var(--line); stroke-width: 2; }
+        .lbl { fill: var(--ink-dim); font: 500 13px var(--sans); text-anchor: middle; }
+        .sub { fill: var(--ink-faint); font: 11px var(--mono); text-anchor: middle; }
+        .path { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 5; fill: none; }
+        .ptr { fill: var(--accent); }
+      </style>
+    </defs>
+
+    <rect class="scr" x="20"  y="40" width="230" height="140" rx="7"/>
+    <text class="lbl" x="135" y="203">Windows PC</text>
+    <text class="sub" x="135" y="221">your keyboard</text>
+
+    <rect class="scr" x="335" y="55" width="200" height="120" rx="7"/>
+    <text class="lbl" x="435" y="203">Mac</text>
+    <text class="sub" x="435" y="221">same pointer</text>
+
+    <rect class="scr" x="620" y="65" width="170" height="100" rx="7"/>
+    <text class="lbl" x="705" y="203">Linux laptop</text>
+    <text class="sub" x="705" y="221">same clipboard</text>
+
+    <path class="path" d="M 250 110 L 335 112"/>
+    <path class="path" d="M 535 113 L 620 114"/>
+
+    <path class="ptr" d="M 300 100 l 0 22 l 5 -6 l 4 9 l 4 -2 l -4 -8 l 8 -1 z"/>
+    <path class="ptr" d="M 578 102 l 0 22 l 5 -6 l 4 9 l 4 -2 l -4 -8 l 8 -1 z"/>
+  </svg>
+  <figcaption>Each machine draws its own screen. Only input and clipboard cross the wire.</figcaption>
+</figure>
+
+<section id="problem">
+  <h2>Two computers, one desk, two keyboards</h2>
+  <p>
+    A work laptop next to a desktop. A Windows gaming PC beside a Mac. A Linux
+    box under the desk you keep reaching over to. You end up with a second
+    keyboard you barely have room for, and copying a link between them means
+    emailing it to yourself.
+  </p>
+  <p>
+    Tether puts every screen on one imaginary desktop. Push the pointer past the
+    right edge of one and it appears on the left edge of the next — the same way
+    two monitors on one computer already work, except these are different
+    computers, running different operating systems.
+  </p>
+</section>
+
+<section id="features">
+  <h2>What it does</h2>
+
+  <div class="grid">
+    <div class="card">
+      <span class="ico">🖱️</span>
+      <h3>Nothing to configure</h3>
+      <p>Run the same command on every machine. They find each other over the
+      network and work out between themselves which one keeps track of the
+      pointer. There is no host to nominate.</p>
+    </div>
+    <div class="card">
+      <span class="ico">⌨️</span>
+      <h3>Whichever keyboard you touch</h3>
+      <p>Put a hand on the other machine's trackpad and it takes over driving.
+      No hotkey, no switching, no mode to remember.</p>
+    </div>
+    <div class="card">
+      <span class="ico">📋</span>
+      <h3>Shared clipboard</h3>
+      <p>Copy on one machine, paste on another. Text and images, both
+      directions, automatically.</p>
+    </div>
+    <div class="card">
+      <span class="ico">🐧</span>
+      <h3>Works on Wayland</h3>
+      <p>The Linux backend sits on the kernel's evdev and uinput interfaces
+      rather than X11, so it works on Wayland, X11 and a bare console alike.</p>
+    </div>
+    <div class="card">
+      <span class="ico">🔒</span>
+      <h3>Encrypted and local</h3>
+      <p>TLS in both directions, authenticated by pinned certificate
+      fingerprints like SSH. Nothing leaves your network. No account, no
+      telemetry, no server in the middle.</p>
+    </div>
+    <div class="card">
+      <span class="ico">🖥️</span>
+      <h3>Multi-monitor</h3>
+      <p>Every screen of every machine goes on one canvas. Drag them into the
+      arrangement they really have on your desk.</p>
+    </div>
+    <div class="card">
+      <span class="ico">⌘</span>
+      <h3>Modifiers that make sense</h3>
+      <p>Keys travel as physical positions, so each machine applies its own
+      layout. ⌘C on a Mac keyboard arrives as Ctrl+C on Windows.</p>
+    </div>
+    <div class="card">
+      <span class="ico">⚡</span>
+      <h3>No video, no lag</h3>
+      <p>Only input crosses the network — a few bytes per event. Every machine
+      draws its own screen at full speed. This is not remote desktop.</p>
+    </div>
+  </div>
+</section>
+
+<section id="platforms">
+  <h2>Every machine on the desk</h2>
+  <table>
+    <tr><th>Platform</th><th>How it works</th><th>What it needs</th></tr>
+    <tr>
+      <td>macOS</td>
+      <td>CGEventTap and CGEvent</td>
+      <td>Accessibility permission</td>
+    </tr>
+    <tr>
+      <td>Windows</td>
+      <td>Low-level hooks and SendInput</td>
+      <td>Nothing — allow it through the firewall</td>
+    </tr>
+    <tr>
+      <td>Linux</td>
+      <td>evdev and uinput — X11, Wayland or console</td>
+      <td>Membership of the <code>input</code> group</td>
+    </tr>
+  </table>
+  <div class="note">
+    <p><strong>Apple Silicon and Intel</strong> in one universal build.
+    Windows x86-64. Linux x86-64, with a <code>.desktop</code> entry and a
+    PKGBUILD for Arch.</p>
+  </div>
+</section>
+
+<section id="download">
+  <h2>Get it</h2>
+  <p>
+    Download the build for each machine from the
+    <a href="https://github.com/Fini240/tether/releases/latest">releases page</a>,
+    then run the same thing everywhere:
+  </p>
+<pre>tether run --pair      # on every machine, once
+tether run             # from then on</pre>
+  <p>
+    The first run prints a fingerprint on each machine. Check they match — that
+    is the pairing — then restart without <code>--pair</code>. From then on only
+    those exact machines are accepted.
+  </p>
+  <p>
+    On macOS and Linux there is a one-line install:
+  </p>
+<pre>curl -fsSL https://raw.githubusercontent.com/Fini240/tether/main/install.sh | sh</pre>
+  <div class="note">
+    <p><strong>Honest status:</strong> Tether is young — version 0.5.2 — and
+    built in the open. Edge crossing, multi-monitor, clipboard, automatic
+    handoff, discovery and encryption all work and are used daily. File
+    transfer is not finished, and the builds are unsigned, so macOS Gatekeeper
+    and Windows SmartScreen will both warn on first run.</p>
+  </div>
+</section>
+
+<section id="alternatives">
+  <h2>Compared with Synergy, Barrier and Deskflow</h2>
+  <p>
+    These all solve the same problem, and Tether owes the idea to them. The
+    differences worth knowing:
+  </p>
+  <table>
+    <tr><th></th><th>Price</th><th>Wayland</th><th>Setup</th></tr>
+    <tr><td>Tether</td><td>Free, MIT/Apache</td><td>Yes, via evdev</td><td>Automatic — no host to pick</td></tr>
+    <tr><td>Synergy</td><td>Commercial</td><td>Partial</td><td>Server and clients configured</td></tr>
+    <tr><td>Barrier</td><td>Free</td><td>No — X11 only</td><td>Server and clients configured</td></tr>
+    <tr><td>Deskflow</td><td>Free</td><td>In progress</td><td>Server and clients configured</td></tr>
+  </table>
+  <p>
+    Barrier is no longer actively maintained; Deskflow continues that lineage.
+    If you want the most established option, they are it. Tether is a fresh
+    implementation in Rust, aimed at needing no configuration at all.
+  </p>
+</section>
+
+<section id="faq">
+  <h2>Questions</h2>
+
+  <details>
+    <summary>Does it work on Wayland?</summary>
+    <p>Yes. The Linux backend uses the kernel's evdev and uinput interfaces
+    rather than X11 or a Wayland protocol, so the same backend covers X11,
+    Wayland and a machine with no desktop at all. It needs membership of the
+    <code>input</code> group, granted once with a udev rule shipped in the
+    release.</p>
+  </details>
+
+  <details>
+    <summary>Does it stream my screen?</summary>
+    <p>No. Only input events and clipboard contents cross the network. Each
+    computer draws its own screen, so there is no video latency and no
+    bandwidth cost. If you want to see one machine's screen on another, you
+    want remote desktop instead — this is the opposite tool.</p>
+  </details>
+
+  <details>
+    <summary>Does it work over the internet?</summary>
+    <p>No, deliberately. Tether is for machines on the same local network.
+    Traffic is TLS encrypted and both ends authenticate with pinned certificate
+    fingerprints, but it is not built to be exposed to the internet.</p>
+  </details>
+
+  <details>
+    <summary>Which machine has to be the host?</summary>
+    <p>None of them. Every machine runs the same command; they discover each
+    other over mDNS and elect between themselves which one keeps the
+    authoritative pointer position, by comparing machine ids. Switch one on and
+    it joins, switch one off and the rest carry on.</p>
+  </details>
+
+  <details>
+    <summary>Is it really free?</summary>
+    <p>Yes — MIT or Apache-2.0, no paid tier, no account, no telemetry. The
+    whole source is on GitHub.</p>
+  </details>
+
+  <details>
+    <summary>Will it work with games?</summary>
+    <p>Often, but not always. A fullscreen game that captures the mouse through
+    Raw Input on Windows can pull the pointer back while you are working on
+    another machine, because a userspace hook cannot take input away from it.
+    Running the game windowed or borderless, or using the cursor lock hotkey,
+    both help.</p>
+  </details>
+
+  <details>
+    <summary>Does it need administrator rights?</summary>
+    <p>Not on Windows or macOS. On Linux it needs your account to be in the
+    <code>input</code> group, which is granted once. Note that anyone in that
+    group can read every keystroke on the machine — inherent to sharing a
+    keyboard, and true of every tool of this kind.</p>
+  </details>
+</section>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    <p style="margin:0 0 6px">
+      <strong style="color:var(--ink-dim)">Tether</strong> — a software KVM in Rust.
+      <a href="https://github.com/Fini240/tether">Source</a> ·
+      <a href="https://github.com/Fini240/tether/releases/latest">Downloads</a> ·
+      <a href="https://github.com/Fini240/tether/issues">Report a problem</a>
+    </p>
+    <p style="margin:0; font-size:13px">
+      Synergy, Barrier and Deskflow are the projects of their respective authors
+      and are named here only for comparison.
+    </p>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>
