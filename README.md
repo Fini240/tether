@@ -1,8 +1,19 @@
 # Tether
 
+**[tether website →](https://fini240.github.io/tether/)** · 
+[Download](https://github.com/Fini240/tether/releases/latest) · 
+[Report a problem](https://github.com/Fini240/tether/issues)
+
+[![CI](https://github.com/Fini240/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/Fini240/tether/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Fini240/tether?color=1a7f5a)](https://github.com/Fini240/tether/releases/latest)
+[![Licence](https://img.shields.io/badge/licence-MIT%20OR%20Apache--2.0-blue)](#licence)
+![Platforms](https://img.shields.io/badge/macOS%20%7C%20Windows%20%7C%20Linux-informational)
+
 Share one keyboard and mouse across several computers on a LAN — a software
 KVM. No extra hardware, no cloud, and no screen streaming: only input,
 clipboard and file events cross the wire.
+
+![Tether](docs/og.png)
 
 - **Nothing to configure.** Run the same command everywhere. The machines find
   each other and sort out the rest.
